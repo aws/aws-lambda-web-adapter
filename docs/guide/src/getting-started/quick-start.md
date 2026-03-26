@@ -14,7 +14,7 @@ AWS Lambda Web Adapter works with Lambda functions packaged as both Docker image
 Add one line to your existing Dockerfile:
 
 ```dockerfile
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 ```
 
 That's it. Your web app now runs on Lambda.

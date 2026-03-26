@@ -38,7 +38,7 @@ Resources:
           AWS_LWA_READINESS_CHECK_PORT: 8081
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:26
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:27
 #        - !Sub arn:aws:lambda:${AWS::Region}:753240598076:layer:LambdaAdapterLayerX86:20
       Events:
         Root:

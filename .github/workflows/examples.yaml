@@ -115,7 +115,7 @@ jobs:
         run: |
           chmod +x /tmp/layer-x86_64/lambda-adapter
           printf 'FROM scratch\nCOPY --chmod=755 lambda-adapter /lambda-adapter\n' | \
-            docker build -t public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 -f- /tmp/layer-x86_64
+            docker build -t public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 -f- /tmp/layer-x86_64
 
       - name: Build
         working-directory: examples/${{ matrix.example }}

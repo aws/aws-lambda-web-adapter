@@ -1,7 +1,7 @@
 FROM public.ecr.aws/docker/library/python:slim
 
 COPY --from=public.ecr.aws/datadog/lambda-extension:84 /opt/. /opt/
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 
 EXPOSE 8080
 WORKDIR "/var/task"

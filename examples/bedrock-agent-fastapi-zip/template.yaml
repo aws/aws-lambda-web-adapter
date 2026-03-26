@@ -24,7 +24,7 @@ Resources:
           AWS_LWA_READINESS_CHECK_PROTOCOL: TCP
           PORT: 8000
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27
       Policies: AmazonS3ReadOnlyAccess
 
   BedrockAgentPermission:  

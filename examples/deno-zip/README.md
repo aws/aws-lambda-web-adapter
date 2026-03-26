@@ -19,7 +19,7 @@ We use `java11` runtime to get SnapStart support with one caveat: no runtime hoo
       Architectures:
         - x86_64
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27
       MemorySize: 512
       Environment:
         Variables:

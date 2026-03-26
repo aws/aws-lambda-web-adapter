@@ -10,7 +10,7 @@ The top level folder is a typical AWS SAM project. The `app` directory is a Fast
 
 ```dockerfile
 FROM public.ecr.aws/docker/library/python:3.8.12-slim-buster
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 ENV PORT=8000
 WORKDIR /var/task
 COPY requirements.txt ./
@@ -22,7 +22,7 @@ CMD exec uvicorn --port=$PORT main:app
 Line 2 copies lambda web adapter binary into /opt/extensions. This is the change to run the FastAPI application on Lambda.
 
 ```dockerfile
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 ```
 
 ## Pre-requisites

@@ -1,6 +1,6 @@
 FROM public.ecr.aws/awsguru/nginx:1.23.2023.3.11.1
 
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 
 # config files
 ADD nginx/conf/nginx.conf /opt/nginx/conf/nginx.conf

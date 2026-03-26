@@ -7,8 +7,8 @@ This example shows how to use Lambda Web Adapter to run a [FastHTML](https://fas
 We add Lambda Web Adapter layer to the function and configure wrapper script.
 
 1. attach Lambda Adapter layer to your function. This layer contains the Lambda Adapter binary and a wrapper script.
-    1. x86_64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26`
-    2. arm64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:26`
+    1. x86_64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27`
+    2. arm64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:27`
 2. configure Lambda environment variable `AWS_LAMBDA_EXEC_WRAPPER` to `/opt/bootstrap`. This is a wrapper script included in the layer.
 3. set function handler to a startup command: `run.sh`. The wrapper script will execute this command to boot up your application.
 
@@ -30,7 +30,7 @@ This is the resource for Lambda function. The function urls's invoke mode is con
           AWS_LWA_INVOKE_MODE: response_stream
           PORT: 8000
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27
       FunctionUrlConfig:
         AuthType: NONE
         InvokeMode: RESPONSE_STREAM
