@@ -1314,7 +1314,7 @@ dependencies = [
 
 [[package]]
 name = "lambda_web_adapter"
-version = "1.0.0-rc1"
+version = "1.0.0"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
