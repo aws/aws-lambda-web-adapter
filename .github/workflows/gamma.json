@@ -216,14 +216,6 @@
     "region": "me-central-1"
   },
   {
-    "artifacts_bucket": "aws-sam-cli-managed-gamma-pipeline-artifactsbucket-omw6lkbxgcpf",
-    "cloudformation_execution_role": "arn:aws:iam::520465526641:role/aws-sam-cli-managed-gamma-CloudFormationExecutionRo-MNeOX0Uc4Ag9",
-    "image_repository": "520465526641.dkr.ecr.me-south-1.amazonaws.com/aws-sam-cli-managed-gamma-pipeline-resources-me-south-1-imagerepository-eiu7zft3ctw2",
-    "pipeline_execution_role": "arn:aws:iam::520465526641:role/aws-sam-cli-managed-gamma-pip-PipelineExecutionRole-KXgG3TuGClEj",
-    "arm64_supported": true,
-    "region": "me-south-1"
-  },
-  {
     "artifacts_bucket": "aws-sam-cli-managed-gamma-pipeline-artifactsbucket-fymyocp1c9zu",
     "cloudformation_execution_role": "arn:aws:iam::520465526641:role/aws-sam-cli-managed-gamma-CloudFormationExecutionRo-3y7jFj4FlLPA",
     "image_repository": "520465526641.dkr.ecr.mx-central-1.amazonaws.com/aws-sam-cli-managed-gamma-pipeline-resources-mx-central-1-imagerepository-t31ceb4cv9yj",
