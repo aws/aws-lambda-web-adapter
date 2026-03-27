@@ -9,7 +9,7 @@ The top level folder is a typical AWS SAM project. The `app` directory is a Sina
 
 ```dockerfile
 FROM public.ecr.aws/docker/library/ruby:3.3
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 WORKDIR /var/task
 COPY Gemfile Gemfile.lock ./
 RUN bundle install

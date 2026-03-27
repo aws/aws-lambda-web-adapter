@@ -10,7 +10,7 @@ The top level folder is a typical AWS SAM project. The `app` directory is a flas
 
 ```dockerfile
 FROM public.ecr.aws/docker/library/python:3.8.12-slim-buster
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 WORKDIR /var/task
 COPY app.py requirements.txt ./
 RUN python3.8 -m pip install -r requirements.txt
@@ -20,7 +20,7 @@ CMD ["gunicorn", "-b=:8080", "-w=1", "app:app"]
 Line 2 copies lambda adapter binary into /opt/extensions. This is the only change to run the Flask application on Lambda.
 
 ```dockerfile
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 ```
 
 ## Pre-requisites

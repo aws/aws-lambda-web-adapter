@@ -15,7 +15,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir --target=/var/task/deps -r requirements.txt
 
 FROM --platform=linux/amd64 public.ecr.aws/docker/library/python:3.14-slim
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 ENV PORT=8000 PYTHONPATH=/var/task/deps
 ENV AWS_LWA_READINESS_CHECK_PATH=/healthz
 ENV AWS_LWA_READINESS_CHECK_HEALTHY_STATUS=100-499
@@ -28,7 +28,7 @@ CMD exec python -m uvicorn --port=$PORT app:app
 Line 7 copies lambda web adapter binary into /opt/extensions. This is the change to run the FastMCP application on Lambda.
 
 ```dockerfile
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 ```
 
 ## Pre-requisites

@@ -25,7 +25,7 @@ Resources:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
           PORT: 3000
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27
         - !Sub arn:aws:lambda:us-east-1:582637575117:layer:BunRuntimeX64:1
       Events:
         RootEvent:

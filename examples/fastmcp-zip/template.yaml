@@ -33,7 +33,7 @@ Resources:
           AWS_LWA_READINESS_CHECK_PATH: /healthz
           AWS_LWA_READINESS_CHECK_HEALTHY_STATUS: 100-499
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:26
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:27
       Events:
         ApiEvent:
           Type: HttpApi

@@ -7,7 +7,7 @@ The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local 
 
 ![Lambda Web Adapter](docs/images/lambda-adapter-overview.png)
 
-📖 **[Read the full User Guide](https://awslabs.github.io/aws-lambda-web-adapter/)**
+📖 **[Read the full User Guide](https://aws.github.io/aws-lambda-web-adapter/)**
 
 ## Features
 
@@ -30,22 +30,22 @@ The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local 
 Add one line to your Dockerfile:
 
 ```dockerfile
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 ```
 
 Pre-compiled multi-arch images (x86_64 and arm64) are available at [public.ecr.aws/awsguru/aws-lambda-adapter](https://gallery.ecr.aws/awsguru/aws-lambda-adapter). [Non-AWS base images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html) may be used since the [Runtime Interface Client](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html#images-ric) ships with the Lambda Web Adapter.
 
-👉 [Docker Images guide](https://awslabs.github.io/aws-lambda-web-adapter/getting-started/docker-images.html)
+👉 [Docker Images guide](https://aws.github.io/aws-lambda-web-adapter/getting-started/docker-images.html)
 
 ### Zip Packages
 
 1. Attach the Lambda Web Adapter layer to your function:
-   - x86_64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26`
-   - arm64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:26`
+   - x86_64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27`
+   - arm64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:27`
 2. Set environment variable `AWS_LAMBDA_EXEC_WRAPPER` to `/opt/bootstrap`
 3. Set function handler to your startup script, e.g. `run.sh`
 
-👉 [Zip Packages guide](https://awslabs.github.io/aws-lambda-web-adapter/getting-started/zip-packages.html) (includes AWS China region ARNs and Windows caveats)
+👉 [Zip Packages guide](https://aws.github.io/aws-lambda-web-adapter/getting-started/zip-packages.html) (includes AWS China region ARNs and Windows caveats)
 
 ## Configurations
 
@@ -73,7 +73,7 @@ The readiness check port/path and traffic port can be configured using environme
 >
 > Additionally, `AWS_LWA_READINESS_CHECK_MIN_UNHEALTHY_STATUS` has been removed in 1.0. Use `AWS_LWA_READINESS_CHECK_HEALTHY_STATUS` instead.
 
-👉 [Detailed configuration docs](https://awslabs.github.io/aws-lambda-web-adapter/configuration/environment-variables.html)
+👉 [Detailed configuration docs](https://aws.github.io/aws-lambda-web-adapter/configuration/environment-variables.html)
 
 ## Examples
 
@@ -119,7 +119,7 @@ The readiness check port/path and traffic port can be configured using environme
 - [Datadog](examples/datadog)
 - [Datadog in Zip](examples/datadog-zip)
 
-👉 [Examples organized by language](https://awslabs.github.io/aws-lambda-web-adapter/examples/overview.html)
+👉 [Examples organized by language](https://aws.github.io/aws-lambda-web-adapter/examples/overview.html)
 
 ## Acknowledgement
 

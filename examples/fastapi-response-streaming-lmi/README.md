@@ -47,7 +47,7 @@ FastAPIFunction:
         AWS_LWA_INVOKE_MODE: response_stream
         PORT: 8000
     Layers:
-      - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26
+      - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27
     CapacityProviderConfig:
       Arn: !GetAtt LMICapacityProvider.Arn
       PerExecutionEnvironmentMaxConcurrency: 64

@@ -14,7 +14,7 @@ This function is packaged as a Docker image. Here is the content of the Dockerfi
 
 ```dockerfile
 FROM public.ecr.aws/docker/library/python:3.12.0-slim-bullseye
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
 
 WORKDIR /app
 ADD . .
@@ -26,7 +26,7 @@ CMD ["python", "main.py"]
 Notice that we only need to add the second line to install Lambda Web Adapter. 
 
 ```dockerfile
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0-rc1 /lambda-adapter /opt/extensions/
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/
 ```
 
 In the SAM template, we use an environment variable `AWS_LWA_INVOKE_MODE: RESPONSE_STREAM` to configure Lambda Web Adapter in response streaming mode. And adding a function url with `InvokeMode: RESPONSE_STREAM`. 

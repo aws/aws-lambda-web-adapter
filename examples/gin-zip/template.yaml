@@ -22,7 +22,7 @@ Resources:
           PORT: 8000
           GIN_MODE: release
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:26
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27
       Events:
         APIEvent:
           Type: HttpApi
