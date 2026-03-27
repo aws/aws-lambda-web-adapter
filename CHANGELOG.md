@@ -1,4 +1,4 @@
-## v1.0.0 - 2026-03-20
+## v1.0.0 - 2026-03-27
 
 ### Major Updates
 
@@ -16,6 +16,7 @@ This is the first GA release of AWS Lambda Web Adapter. It includes multi-tenanc
 - **Error status codes**: New `AWS_LWA_ERROR_STATUS_CODES` env var to treat specific HTTP status codes as Lambda failures (#558)
 - **Runtime API proxy**: New `AWS_LWA_LAMBDA_RUNTIME_API_PROXY` env var to proxy Lambda runtime API calls (#588)
 - **Healthy status ranges**: New `AWS_LWA_READINESS_CHECK_HEALTHY_STATUS` supporting comma-separated codes and ranges (e.g., `200-399,404`) (#638)
+- **GA readiness improvements**: Deprecation warnings for non-prefixed env vars, improved configuration validation (#667)
 
 ### Performance
 
@@ -24,6 +25,9 @@ This is the first GA release of AWS Lambda Web Adapter. It includes multi-tenanc
 
 ### Bug Fixes
 
+- Update aws-lc-rs to resolve 5 security advisories (#687)
+- Disable connection pooling to prevent stale connections after SnapStart (#671)
+- Preserve response body when `error_status_codes` triggers (#668)
 - Don't append trailing `?` when query string is empty (#657)
 - Fix `path_through_path` renamed to `pass_through_path` (#619)
 - Override user-set `x-amzn-{lambda,request}-context` headers to prevent spoofing (#286)
@@ -36,6 +40,7 @@ This is the first GA release of AWS Lambda Web Adapter. It includes multi-tenanc
 - Added migration guide for 0.x to 1.0 upgrade
 - Added SECURITY.md
 - Added user guide with GitHub Pages deployment (#639)
+- Simplify README and link to user guide (#644)
 
 ### CI/CD
 
@@ -44,6 +49,46 @@ This is the first GA release of AWS Lambda Web Adapter. It includes multi-tenanc
 - Add workflow to verify examples without deployment (#643)
 - Daily security audit via `rustsec/audit-check` (#391)
 - Benchmark tracking with PR comments
+
+### Dependencies
+
+- Upgrade lambda runtime from 1.1.0-rc1 to 1.1.1 (#661)
+- Bump rustls-webpki from 0.103.9 to 0.103.10 (#679)
+
+### Examples
+
+- Add FastMCP examples (#645)
+- Add Datadog examples for streaming mode (#608)
+- Upgrade deprecated Lambda runtimes in examples (#649)
+
+---
+
+## v1.0.0-rc1 - 2026-02-16
+
+### Features
+
+- **Multi-tenancy support**: Propagate `tenant_id` from Lambda context as `x-amz-tenant-id` header (#631)
+- **Lambda Managed Instances**: Support concurrent request handling in a single execution environment (#625)
+- Improve error handling, comprehensive documentation, and API improvements (#628)
+
+### Performance
+
+- Zero-copy body conversion and performance benchmarks (#627)
+
+### Bug Fixes
+
+- Rename `path_through_path` to `pass_through_path` (#619)
+- Use native SAM CLI installer for all pipeline jobs (#632)
+
+### Examples
+
+- Add Datadog examples (#602, #608)
+
+### Maintenance
+
+- Update dependencies to latest versions (#624)
+- Update arm64 supported regions (#621)
+- Update `actions/checkout` GitHub Actions (#594)
 
 ---
 
