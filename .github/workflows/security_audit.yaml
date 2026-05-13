@@ -2,6 +2,11 @@ name: Security audit
 on:
   schedule:
     - cron: '0 0 * * *'
+
+permissions:
+  contents: read   # actions/checkout
+  issues: write    # rustsec/audit-check opens a tracking issue when new advisories appear
+
 jobs:
   audit:
     runs-on: ubuntu-24.04
