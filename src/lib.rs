@@ -80,6 +80,14 @@ const ENV_AUTHORIZATION_SOURCE: &str = "AWS_LWA_AUTHORIZATION_SOURCE";
 const ENV_ERROR_STATUS_CODES: &str = "AWS_LWA_ERROR_STATUS_CODES";
 const ENV_LAMBDA_RUNTIME_API_PROXY: &str = "AWS_LWA_LAMBDA_RUNTIME_API_PROXY";
 
+// Bounded exponential-backoff retry for the initial extension-registration POST.
+// With base 20ms and factor 2, attempts wait ~20, 40, 80, 160, 320ms (plus jitter)
+// — under ~620ms total worst-case, well inside Lambda's 10s init window. This
+// gives sibling extensions (e.g. Datadog) time to bind their proxy socket when
+// AWS_LWA_LAMBDA_RUNTIME_API_PROXY points at them.
+const EXTENSION_REGISTER_MAX_RETRIES: usize = 5;
+const EXTENSION_REGISTER_BASE_MS: u64 = 20;
+
 // Deprecated environment variable names (without prefix)
 const ENV_PORT_DEPRECATED: &str = "PORT";
 const ENV_HOST_DEPRECATED: &str = "HOST";
@@ -119,7 +127,10 @@ use std::{
     time::Duration,
 };
 use tokio::{net::TcpStream, time::timeout};
-use tokio_retry::{strategy::FixedInterval, Retry};
+use tokio_retry::{
+    strategy::{jitter, ExponentialBackoff, FixedInterval},
+    Retry,
+};
 use tower::{Service, ServiceBuilder};
 use tower_http::compression::CompressionLayer;
 use url::Url;
@@ -639,8 +650,10 @@ impl Adapter<HttpConnector, Body> {
     /// if extension registration fails, terminating the Lambda execution environment.
     pub fn register_default_extension(&self) {
         // register as an external extension
+        let aws_lambda_runtime_api: String =
+            env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string());
         tokio::task::spawn(async move {
-            if let Err(e) = Self::register_extension_internal().await {
+            if let Err(e) = Self::register_extension_internal(aws_lambda_runtime_api).await {
                 tracing::error!(error = %e, "Extension registration failed - terminating process");
                 std::process::exit(1);
             }
@@ -651,25 +664,40 @@ impl Adapter<HttpConnector, Body> {
     ///
     /// Registers with the Lambda Extensions API and waits for the next event.
     /// This keeps the extension alive for the duration of the Lambda instance.
-    async fn register_extension_internal() -> Result<(), Error> {
-        let aws_lambda_runtime_api: String =
-            env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    async fn register_extension_internal(aws_lambda_runtime_api: String) -> Result<(), Error> {
         let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(HttpConnector::new());
 
-        let register_req = hyper::Request::builder()
-            .method(Method::POST)
-            .uri(format!("http://{aws_lambda_runtime_api}/2020-01-01/extension/register"))
-            .header("Lambda-Extension-Name", "lambda-adapter")
-            .body(Body::from("{ \"events\": [] }"))?;
+        // Retry only the registration POST. /extension/event/next is a long-poll the
+        // extension holds open for the function's lifetime; retrying it would be wrong.
+        let strategy = ExponentialBackoff::from_millis(2)
+            .factor(EXTENSION_REGISTER_BASE_MS / 2)
+            .map(jitter)
+            .take(EXTENSION_REGISTER_MAX_RETRIES);
 
-        let register_res = client.request(register_req).await?;
-
-        if register_res.status() != StatusCode::OK {
-            return Err(Error::from(format!(
-                "Extension registration failed with status: {}",
-                register_res.status()
-            )));
-        }
+        let client_ref = &client;
+        let api_ref: &str = &aws_lambda_runtime_api;
+        let register_res = Retry::spawn(strategy, || async move {
+            let req = hyper::Request::builder()
+                .method(Method::POST)
+                .uri(format!("http://{api_ref}/2020-01-01/extension/register"))
+                .header("Lambda-Extension-Name", "lambda-adapter")
+                .body(Body::from("{ \"events\": [] }"))?;
+            match client_ref.request(req).await {
+                Err(e) => {
+                    tracing::warn!(error = %e, "extension registration attempt failed, will retry");
+                    Err(Error::from(e))
+                }
+                Ok(res) if res.status() != StatusCode::OK => {
+                    let status = res.status();
+                    tracing::warn!(%status, "extension registration returned non-OK, will retry");
+                    Err(Error::from(format!(
+                        "Extension registration failed with status: {status}"
+                    )))
+                }
+                Ok(res) => Ok(res),
+            }
+        })
+        .await?;
 
         let extension_id = register_res
             .headers()
@@ -1376,5 +1404,54 @@ mod tests {
 
         let response = adapter.fetch_response(request).await.expect("Request failed");
         assert_eq!(200, response.status().as_u16());
+    }
+
+    // Regression test for the LWA 1.0.0 + Datadog-extension crash: when the proxy
+    // socket isn't bound yet at startup, the initial POST /extension/register
+    // failed with "client error (Connect)" and the process exited. With the
+    // retry loop, transient connect/5xx failures should be absorbed.
+    #[tokio::test]
+    async fn test_register_extension_retries_on_transient_failure() {
+        use httpmock::{HttpMockRequest, HttpMockResponse, Method::POST};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let server = MockServer::start();
+
+        // /register: return 500 for the first two requests, then 200 with the
+        // identifier header that LWA expects.
+        let register_hits = Arc::new(AtomicUsize::new(0));
+        let register_hits_for_responder = Arc::clone(&register_hits);
+        server.mock(|when, then| {
+            when.method(POST).path("/2020-01-01/extension/register");
+            then.respond_with(move |_req: &HttpMockRequest| {
+                let n = register_hits_for_responder.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    HttpMockResponse::builder().status(500).build()
+                } else {
+                    HttpMockResponse::builder()
+                        .status(200)
+                        .header("Lambda-Extension-Identifier", "test-extension-id")
+                        .build()
+                }
+            });
+        });
+
+        // /next: respond immediately so register_extension_internal returns
+        // (in production this call is a long-poll for the function's lifetime).
+        server.mock(|when, then| {
+            when.method(GET).path("/2020-01-01/extension/event/next");
+            then.status(200);
+        });
+
+        let runtime_api = format!("{}:{}", server.host(), server.port());
+        let result = Adapter::register_extension_internal(runtime_api).await;
+        assert!(result.is_ok(), "expected Ok after retries, got: {result:?}");
+
+        let hits = register_hits.load(Ordering::SeqCst);
+        assert!(
+            hits >= 3,
+            "expected /register to be hit at least 3 times (2 failures + 1 success), got {hits}"
+        );
     }
 }
