@@ -468,6 +468,22 @@ fn parse_status_codes(input: &str) -> Vec<u16> {
         .collect()
 }
 
+/// Returns `s` with bytes that `http::HeaderValue` rejects removed.
+///
+/// RFC 7230 limits header field values to visible ASCII plus SP/HTAB; bytes
+/// `< 0x20` (except `\t` = 0x09) and DEL (`0x7F`) are forbidden. The
+/// `x-amzn-request-context` and `x-amzn-lambda-context` headers carry
+/// JSON serialized from the Lambda event, which can echo arbitrary bytes
+/// from the original request path. Without this, a request whose path
+/// contains control bytes (e.g. from a security scanner) would fail the
+/// whole invocation with `InvalidHeaderValue`.
+fn strip_forbidden_header_bytes(s: String) -> Vec<u8> {
+    s.into_bytes()
+        .into_iter()
+        .filter(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F))
+        .collect()
+}
+
 /// The Lambda Web Adapter.
 ///
 /// This is the main struct that handles forwarding Lambda events to your web application.
@@ -913,13 +929,13 @@ impl Adapter<HttpConnector, Body> {
         // include request context in http header "x-amzn-request-context"
         req_headers.insert(
             HeaderName::from_static("x-amzn-request-context"),
-            HeaderValue::from_bytes(serde_json::to_string(&request_context)?.as_bytes())?,
+            HeaderValue::from_bytes(&strip_forbidden_header_bytes(serde_json::to_string(&request_context)?))?,
         );
 
         // include lambda context in http header "x-amzn-lambda-context"
         req_headers.insert(
             HeaderName::from_static("x-amzn-lambda-context"),
-            HeaderValue::from_bytes(serde_json::to_string(&lambda_context)?.as_bytes())?,
+            HeaderValue::from_bytes(&strip_forbidden_header_bytes(serde_json::to_string(&lambda_context)?))?,
         );
 
         // Multi-tenancy support: propagate tenant_id from Lambda context
@@ -1375,6 +1391,85 @@ mod tests {
         request.extensions_mut().insert(make_lambda_context(None));
 
         let response = adapter.fetch_response(request).await.expect("Request failed");
+        assert_eq!(200, response.status().as_u16());
+    }
+
+    #[test]
+    fn test_strip_forbidden_header_bytes() {
+        // Tab (0x09) and printable ASCII are preserved; CR/LF, NUL, DEL, and other
+        // C0 control bytes are removed.
+        let input = "a\tb\nc\rd\u{00}e\u{04}f\u{18}g\u{7f}h".to_string();
+        assert_eq!(strip_forbidden_header_bytes(input), b"a\tbcdefgh");
+
+        // UTF-8 multi-byte characters are preserved (all continuation bytes >= 0x80
+        // and lead bytes >= 0xC0 are above the 0x7F threshold).
+        let input = "héllo".to_string();
+        assert_eq!(strip_forbidden_header_bytes(input), "héllo".as_bytes());
+    }
+
+    /// Regression test for https://github.com/aws/aws-lambda-web-adapter/issues/732
+    ///
+    /// When the Lambda event's request context contains bytes that are forbidden in
+    /// HTTP header values (control bytes < 0x20 except \t, and 0x7F), serializing
+    /// the request context to JSON and inserting it as `x-amzn-request-context`
+    /// must not fail. Such bytes can appear when scanners (e.g. nuclei) probe a
+    /// Lambda Function URL with crafted paths.
+    #[tokio::test]
+    async fn test_request_context_with_control_bytes_in_path() {
+        let app_server = MockServer::start();
+        app_server.mock(|when, then| {
+            when.method(GET).is_true(|req| {
+                let headers = req.headers();
+                let Some(header_value) = headers.get("x-amzn-request-context") else {
+                    return false;
+                };
+                // Header bytes must be header-safe (no C0 controls except \t, no DEL).
+                if header_value
+                    .as_bytes()
+                    .iter()
+                    .any(|&b| b != b'\t' && (b < 0x20 || b == 0x7F))
+                {
+                    return false;
+                }
+                // The sanitized header must still parse as the original JSON
+                // structure with the request context's path field present.
+                let Ok(json) = serde_json::from_slice::<serde_json::Value>(header_value.as_bytes())
+                else {
+                    return false;
+                };
+                json.pointer("/http/path").and_then(|v| v.as_str()).is_some()
+            });
+            then.status(200).body("OK");
+        });
+
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/".to_string(),
+            ..Default::default()
+        };
+
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // Build an ApiGatewayV2 request whose request_context.http.path contains
+        // control bytes that http::HeaderValue rejects (DEL = 0x7F, plus 0x04, 0x18).
+        let v2_req = lambda_http::request::LambdaRequest::ApiGatewayV2({
+            use lambda_http::aws_lambda_events::apigw::ApiGatewayV2httpRequest;
+            let mut req = ApiGatewayV2httpRequest::default();
+            req.raw_path = Some("/hello".into());
+            req.request_context.http.method = Method::GET;
+            req.request_context.http.path =
+                Some("/\u{04}\u{7f}\u{18};{curl,http://test.oast.site}".into());
+            req
+        });
+        let mut request = Request::from(v2_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+
+        let response = adapter
+            .fetch_response(request)
+            .await
+            .expect("Request failed despite control bytes in request context path");
         assert_eq!(200, response.status().as_u16());
     }
 }
