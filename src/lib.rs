@@ -92,6 +92,13 @@ const ENV_ASYNC_INIT_DEPRECATED: &str = "ASYNC_INIT";
 // Lambda runtime environment variable
 const ENV_LAMBDA_RUNTIME_API: &str = "AWS_LAMBDA_RUNTIME_API";
 
+// Captures the original AWS_LAMBDA_RUNTIME_API value before apply_runtime_proxy_config()
+// overwrites it with the proxy address. Extension registration uses the original so it
+// reaches the real Lambda Runtime API directly, bypassing the proxy.
+// Outer Option distinguishes "not yet captured" (None) from "captured but env was unset"
+// (Some(None)).
+static ORIGINAL_LAMBDA_RUNTIME_API: OnceLock<Option<String>> = OnceLock::new();
+
 use http::{
     header::{HeaderName, HeaderValue},
     Method, StatusCode,
@@ -114,7 +121,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -652,8 +659,13 @@ impl Adapter<HttpConnector, Body> {
     /// Registers with the Lambda Extensions API and waits for the next event.
     /// This keeps the extension alive for the duration of the Lambda instance.
     async fn register_extension_internal() -> Result<(), Error> {
-        let aws_lambda_runtime_api: String =
-            env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+        // Prefer the original (pre-proxy) value if apply_runtime_proxy_config() captured one.
+        // Otherwise fall back to the current env var.
+        let aws_lambda_runtime_api: String = ORIGINAL_LAMBDA_RUNTIME_API
+            .get()
+            .and_then(|v| v.clone())
+            .or_else(|| env::var(ENV_LAMBDA_RUNTIME_API).ok())
+            .unwrap_or_else(|| "127.0.0.1:9001".to_string());
         let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(HttpConnector::new());
 
         let register_req = hyper::Request::builder()
@@ -868,6 +880,11 @@ impl Adapter<HttpConnector, Body> {
     /// ```
     pub fn apply_runtime_proxy_config() {
         if let Ok(runtime_proxy) = env::var(ENV_LAMBDA_RUNTIME_API_PROXY) {
+            // Capture the original value before we overwrite it, so extension
+            // registration can still reach the real Lambda Runtime API.
+            let original = env::var(ENV_LAMBDA_RUNTIME_API).ok();
+            let _ = ORIGINAL_LAMBDA_RUNTIME_API.set(original);
+
             // We need to overwrite the env variable because lambda_http::run()
             // calls lambda_runtime::run() which doesn't allow changing the client URI.
             //
@@ -1243,22 +1260,31 @@ mod tests {
         assert!(codes.is_empty());
     }
 
+    // Combined into one test because ORIGINAL_LAMBDA_RUNTIME_API is a process-wide
+    // OnceLock that can only be set once — separate tests would race on it.
     #[test]
-    fn test_apply_runtime_proxy_config_sets_env() {
-        // Clean up first
+    fn test_apply_runtime_proxy_config() {
+        // Cleanup
         env::remove_var(ENV_LAMBDA_RUNTIME_API_PROXY);
         env::remove_var(ENV_LAMBDA_RUNTIME_API);
 
-        // When proxy is not set, runtime API should not be changed
+        // Case 1: proxy unset → no overwrite, no capture
         Adapter::apply_runtime_proxy_config();
         assert!(env::var(ENV_LAMBDA_RUNTIME_API).is_err());
+        assert!(ORIGINAL_LAMBDA_RUNTIME_API.get().is_none());
 
-        // When proxy is set, runtime API should be overwritten
+        // Case 2: proxy set with a real original → original captured, env overwritten
+        env::set_var(ENV_LAMBDA_RUNTIME_API, "real-api:9001");
         env::set_var(ENV_LAMBDA_RUNTIME_API_PROXY, "127.0.0.1:9002");
         Adapter::apply_runtime_proxy_config();
         assert_eq!(env::var(ENV_LAMBDA_RUNTIME_API).unwrap(), "127.0.0.1:9002");
+        assert_eq!(
+            ORIGINAL_LAMBDA_RUNTIME_API.get(),
+            Some(&Some("real-api:9001".to_string())),
+            "extension registration should see the pre-proxy Runtime API"
+        );
 
-        // Clean up
+        // Cleanup
         env::remove_var(ENV_LAMBDA_RUNTIME_API_PROXY);
         env::remove_var(ENV_LAMBDA_RUNTIME_API);
     }
