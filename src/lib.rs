@@ -80,11 +80,8 @@ const ENV_AUTHORIZATION_SOURCE: &str = "AWS_LWA_AUTHORIZATION_SOURCE";
 const ENV_ERROR_STATUS_CODES: &str = "AWS_LWA_ERROR_STATUS_CODES";
 const ENV_LAMBDA_RUNTIME_API_PROXY: &str = "AWS_LWA_LAMBDA_RUNTIME_API_PROXY";
 
-// Bounded exponential-backoff retry for the initial extension-registration POST.
-// With base 20ms and factor 2, attempts wait ~20, 40, 80, 160, 320ms (plus jitter)
-// — under ~620ms total worst-case, well inside Lambda's 10s init window. This
-// gives sibling extensions (e.g. Datadog) time to bind their proxy socket when
-// AWS_LWA_LAMBDA_RUNTIME_API_PROXY points at them.
+// Extension register retry variables
+const ENV_EXTENSION_REGISTER_BASE_MS: &str = "AWS_LWA_EXTENSION_REGISTER_BASE_MS";
 const EXTENSION_REGISTER_MAX_RETRIES: usize = 5;
 const EXTENSION_REGISTER_BASE_MS: u64 = 20;
 
@@ -667,10 +664,13 @@ impl Adapter<HttpConnector, Body> {
     async fn register_extension_internal(aws_lambda_runtime_api: String) -> Result<(), Error> {
         let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(HttpConnector::new());
 
-        // Retry only the registration POST. /extension/event/next is a long-poll the
-        // extension holds open for the function's lifetime; retrying it would be wrong.
+        // Extensions proxying AWS_LAMBDA_RUNTIME_API may not have bound their socket when LWA registers, retry the POST with exponential backoff to allow them to bind.
+        let base_ms: u64 = env::var(ENV_EXTENSION_REGISTER_BASE_MS)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(EXTENSION_REGISTER_BASE_MS);
         let strategy = ExponentialBackoff::from_millis(2)
-            .factor(EXTENSION_REGISTER_BASE_MS / 2)
+            .factor(base_ms / 2)
             .map(jitter)
             .take(EXTENSION_REGISTER_MAX_RETRIES);
 
