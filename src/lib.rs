@@ -107,6 +107,7 @@ use lambda_http::Body;
 pub use lambda_http::Error;
 use lambda_http::{Request, RequestExt, Response};
 use readiness::Checkpoint;
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::{
     env,
@@ -477,11 +478,25 @@ fn parse_status_codes(input: &str) -> Vec<u16> {
 /// from the original request path. Without this, a request whose path
 /// contains control bytes (e.g. from a security scanner) would fail the
 /// whole invocation with `InvalidHeaderValue`.
-fn strip_forbidden_header_bytes(s: String) -> Vec<u8> {
-    s.into_bytes()
-        .into_iter()
-        .filter(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F))
-        .collect()
+///
+/// Returns `Cow::Borrowed` when no forbidden byte is present (the common
+/// case), avoiding any allocation.
+fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
+    let bytes = s.as_bytes();
+    if bytes
+        .iter()
+        .all(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F))
+    {
+        Cow::Borrowed(bytes)
+    } else {
+        Cow::Owned(
+            bytes
+                .iter()
+                .copied()
+                .filter(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F))
+                .collect(),
+        )
+    }
 }
 
 /// The Lambda Web Adapter.
@@ -933,13 +948,13 @@ impl Adapter<HttpConnector, Body> {
         // include request context in http header "x-amzn-request-context"
         req_headers.insert(
             HeaderName::from_static("x-amzn-request-context"),
-            HeaderValue::from_bytes(&strip_forbidden_header_bytes(serde_json::to_string(&request_context)?))?,
+            HeaderValue::from_bytes(&strip_forbidden_header_bytes(&serde_json::to_string(&request_context)?))?,
         );
 
         // include lambda context in http header "x-amzn-lambda-context"
         req_headers.insert(
             HeaderName::from_static("x-amzn-lambda-context"),
-            HeaderValue::from_bytes(&strip_forbidden_header_bytes(serde_json::to_string(&lambda_context)?))?,
+            HeaderValue::from_bytes(&strip_forbidden_header_bytes(&serde_json::to_string(&lambda_context)?))?,
         );
 
         // Multi-tenancy support: propagate tenant_id from Lambda context
@@ -1402,13 +1417,32 @@ mod tests {
     fn test_strip_forbidden_header_bytes() {
         // Tab (0x09) and printable ASCII are preserved; CR/LF, NUL, DEL, and other
         // C0 control bytes are removed.
-        let input = "a\tb\nc\rd\u{00}e\u{04}f\u{18}g\u{7f}h".to_string();
-        assert_eq!(strip_forbidden_header_bytes(input), b"a\tbcdefgh");
+        let out = strip_forbidden_header_bytes("a\tb\nc\rd\u{00}e\u{04}f\u{18}g\u{7f}h");
+        assert_eq!(out.as_ref(), b"a\tbcdefgh");
+        assert!(matches!(out, Cow::Owned(_)), "input had forbidden bytes — must allocate");
 
         // UTF-8 multi-byte characters are preserved (all continuation bytes >= 0x80
         // and lead bytes >= 0xC0 are above the 0x7F threshold).
-        let input = "héllo".to_string();
-        assert_eq!(strip_forbidden_header_bytes(input), "héllo".as_bytes());
+        let out = strip_forbidden_header_bytes("héllo");
+        assert_eq!(out.as_ref(), "héllo".as_bytes());
+    }
+
+    /// Fast path: input that is already header-safe must not allocate.
+    #[test]
+    fn test_strip_forbidden_header_bytes_all_clean() {
+        let input = r#"{"http":{"path":"/api/users"},"requestId":"abc-123"}"#;
+        let out = strip_forbidden_header_bytes(input);
+        assert_eq!(out.as_ref(), input.as_bytes());
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "header-safe input must not allocate (Cow::Borrowed expected)"
+        );
+
+        // Tab is allowed and should also stay on the borrowed fast path.
+        let input = "tab\there";
+        let out = strip_forbidden_header_bytes(input);
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out.as_ref(), input.as_bytes());
     }
 
     /// Regression test for https://github.com/aws/aws-lambda-web-adapter/issues/732
@@ -1424,23 +1458,47 @@ mod tests {
         app_server.mock(|when, then| {
             when.method(GET).is_true(|req| {
                 let headers = req.headers();
-                let Some(header_value) = headers.get("x-amzn-request-context") else {
+
+                // --- x-amzn-request-context: this is where the control bytes
+                // came from (echoed via request_context.http.path).
+                let Some(req_ctx) = headers.get("x-amzn-request-context") else {
                     return false;
                 };
-                // Header bytes must be header-safe (no C0 controls except \t, no DEL).
-                if header_value
+                if req_ctx
                     .as_bytes()
                     .iter()
                     .any(|&b| b != b'\t' && (b < 0x20 || b == 0x7F))
                 {
                     return false;
                 }
-                // The sanitized header must still parse as the original JSON
-                // structure with the request context's path field present.
-                let Ok(json) = serde_json::from_slice::<serde_json::Value>(header_value.as_bytes()) else {
+                // Stripped JSON must deserialize back into the typed RequestContext
+                // (not just generic JSON) — proving the structure consumers rely on
+                // survives sanitization.
+                let Ok(ctx) = serde_json::from_slice::<RequestContext>(req_ctx.as_bytes()) else {
                     return false;
                 };
-                json.pointer("/http/path").and_then(|v| v.as_str()).is_some()
+                if !matches!(ctx, RequestContext::ApiGatewayV2(_)) {
+                    return false;
+                }
+
+                // --- x-amzn-lambda-context: parallel assertion — the second
+                // call site also goes through strip_forbidden_header_bytes, so
+                // the header must be present, header-safe, and round-trip into
+                // a Context value.
+                let Some(lambda_ctx) = headers.get("x-amzn-lambda-context") else {
+                    return false;
+                };
+                if lambda_ctx
+                    .as_bytes()
+                    .iter()
+                    .any(|&b| b != b'\t' && (b < 0x20 || b == 0x7F))
+                {
+                    return false;
+                }
+                serde_json::from_slice::<serde_json::Value>(lambda_ctx.as_bytes())
+                    .ok()
+                    .and_then(|v| v.get("request_id").and_then(|r| r.as_str()).map(str::to_owned))
+                    .is_some()
             });
             then.status(200).body("OK");
         });
