@@ -661,11 +661,10 @@ impl Adapter<HttpConnector, Body> {
     async fn register_extension_internal() -> Result<(), Error> {
         // Prefer the original (pre-proxy) value if apply_runtime_proxy_config() captured one.
         // Otherwise fall back to the current env var.
-        let aws_lambda_runtime_api: String = ORIGINAL_LAMBDA_RUNTIME_API
-            .get()
-            .and_then(|v| v.clone())
-            .or_else(|| env::var(ENV_LAMBDA_RUNTIME_API).ok())
-            .unwrap_or_else(|| "127.0.0.1:9001".to_string());
+        let aws_lambda_runtime_api: String = match ORIGINAL_LAMBDA_RUNTIME_API.get() {
+            Some(captured) => captured.clone().unwrap_or_else(|| "127.0.0.1:9001".to_string()),
+            None => env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string()),
+        };
         let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(HttpConnector::new());
 
         let register_req = hyper::Request::builder()
