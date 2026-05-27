@@ -1406,10 +1406,7 @@ mod tests {
         assert_eq!(200, response.status().as_u16());
     }
 
-    // Regression test for the LWA 1.0.0 + Datadog-extension crash: when the proxy
-    // socket isn't bound yet at startup, the initial POST /extension/register
-    // failed with "client error (Connect)" and the process exited. With the
-    // retry loop, transient connect/5xx failures should be absorbed.
+    // Test extension registration retry on transient failures
     #[tokio::test]
     async fn test_register_extension_retries_on_transient_failure() {
         use httpmock::{HttpMockRequest, HttpMockResponse, Method::POST};
@@ -1452,6 +1449,59 @@ mod tests {
         assert!(
             hits >= 3,
             "expected /register to be hit at least 3 times (2 failures + 1 success), got {hits}"
+        );
+    }
+
+    // Test extension registration retry on late proxy bind
+    #[tokio::test]
+    async fn test_register_extension_handles_late_proxy_bind() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Find a port number, then release it so nothing is listening yet
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            p
+        };
+
+        let register_hits = Arc::new(AtomicUsize::new(0));
+        let proxy_hits = Arc::clone(&register_hits);
+
+        // Sibling extension binds 80ms late, then 200s every request
+        let proxy = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                if std::str::from_utf8(&buf[..n])
+                    .unwrap_or("")
+                    .contains("/extension/register")
+                {
+                    proxy_hits.fetch_add(1, Ordering::SeqCst);
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nLambda-Extension-Identifier: test-ext\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let runtime_api = format!("127.0.0.1:{port}");
+        let result = Adapter::register_extension_internal(runtime_api).await;
+        proxy.abort();
+
+        assert!(result.is_ok(), "expected Ok after late-bind retries, got: {result:?}");
+        assert!(
+            register_hits.load(Ordering::SeqCst) >= 1,
+            "expected /register to reach the proxy at least once after it bound"
         );
     }
 }
