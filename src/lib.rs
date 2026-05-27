@@ -483,10 +483,7 @@ fn parse_status_codes(input: &str) -> Vec<u16> {
 /// case), avoiding any allocation.
 fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
     let bytes = s.as_bytes();
-    if bytes
-        .iter()
-        .all(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F))
-    {
+    if bytes.iter().all(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F)) {
         Cow::Borrowed(bytes)
     } else {
         Cow::Owned(
@@ -1419,7 +1416,10 @@ mod tests {
         // C0 control bytes are removed.
         let out = strip_forbidden_header_bytes("a\tb\nc\rd\u{00}e\u{04}f\u{18}g\u{7f}h");
         assert_eq!(out.as_ref(), b"a\tbcdefgh");
-        assert!(matches!(out, Cow::Owned(_)), "input had forbidden bytes — must allocate");
+        assert!(
+            matches!(out, Cow::Owned(_)),
+            "input had forbidden bytes — must allocate"
+        );
 
         // UTF-8 multi-byte characters are preserved (all continuation bytes >= 0x80
         // and lead bytes >= 0xC0 are above the 0x7F threshold).
