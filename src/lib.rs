@@ -917,7 +917,11 @@ impl Adapter<HttpConnector, Body> {
 
         // strip away Base Path if environment variable REMOVE_BASE_PATH is set.
         if let Some(base_path) = self.base_path.as_deref() {
-            path = path.trim_start_matches(base_path);
+            let stripped = path.trim_start_matches(base_path);
+            if stripped.len() != path.len() {
+                tracing::debug!(base_path = %base_path, original = %path, stripped = %stripped, "stripped base path");
+            }
+            path = stripped;
         }
 
         if matches!(request_context, RequestContext::PassThrough) && parts.method == Method::POST {
