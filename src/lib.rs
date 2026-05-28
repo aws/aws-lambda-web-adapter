@@ -92,6 +92,13 @@ const ENV_ASYNC_INIT_DEPRECATED: &str = "ASYNC_INIT";
 // Lambda runtime environment variable
 const ENV_LAMBDA_RUNTIME_API: &str = "AWS_LAMBDA_RUNTIME_API";
 
+// Captures the original AWS_LAMBDA_RUNTIME_API value before apply_runtime_proxy_config()
+// overwrites it with the proxy address. Extension registration uses the original so it
+// reaches the real Lambda Runtime API directly, bypassing the proxy.
+// Outer Option distinguishes "not yet captured" (None) from "captured but env was unset"
+// (Some(None)).
+static ORIGINAL_LAMBDA_RUNTIME_API: OnceLock<Option<String>> = OnceLock::new();
+
 use http::{
     header::{HeaderName, HeaderValue},
     Method, StatusCode,
@@ -107,6 +114,7 @@ use lambda_http::Body;
 pub use lambda_http::Error;
 use lambda_http::{Request, RequestExt, Response};
 use readiness::Checkpoint;
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::{
     env,
@@ -114,7 +122,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -468,6 +476,33 @@ fn parse_status_codes(input: &str) -> Vec<u16> {
         .collect()
 }
 
+/// Returns `s` with bytes that `http::HeaderValue` rejects removed.
+///
+/// RFC 7230 limits header field values to visible ASCII plus SP/HTAB; bytes
+/// `< 0x20` (except `\t` = 0x09) and DEL (`0x7F`) are forbidden. The
+/// `x-amzn-request-context` and `x-amzn-lambda-context` headers carry
+/// JSON serialized from the Lambda event, which can echo arbitrary bytes
+/// from the original request path. Without this, a request whose path
+/// contains control bytes (e.g. from a security scanner) would fail the
+/// whole invocation with `InvalidHeaderValue`.
+///
+/// Returns `Cow::Borrowed` when no forbidden byte is present (the common
+/// case), avoiding any allocation.
+fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
+    let bytes = s.as_bytes();
+    if bytes.iter().all(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F)) {
+        Cow::Borrowed(bytes)
+    } else {
+        Cow::Owned(
+            bytes
+                .iter()
+                .copied()
+                .filter(|&b| b == b'\t' || (b >= 0x20 && b != 0x7F))
+                .collect(),
+        )
+    }
+}
+
 /// The Lambda Web Adapter.
 ///
 /// This is the main struct that handles forwarding Lambda events to your web application.
@@ -652,8 +687,12 @@ impl Adapter<HttpConnector, Body> {
     /// Registers with the Lambda Extensions API and waits for the next event.
     /// This keeps the extension alive for the duration of the Lambda instance.
     async fn register_extension_internal() -> Result<(), Error> {
-        let aws_lambda_runtime_api: String =
-            env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+        // Prefer the original (pre-proxy) value if apply_runtime_proxy_config() captured one.
+        // Otherwise fall back to the current env var.
+        let aws_lambda_runtime_api: String = match ORIGINAL_LAMBDA_RUNTIME_API.get() {
+            Some(captured) => captured.clone().unwrap_or_else(|| "127.0.0.1:9001".to_string()),
+            None => env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string()),
+        };
         let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(HttpConnector::new());
 
         let register_req = hyper::Request::builder()
@@ -868,6 +907,11 @@ impl Adapter<HttpConnector, Body> {
     /// ```
     pub fn apply_runtime_proxy_config() {
         if let Ok(runtime_proxy) = env::var(ENV_LAMBDA_RUNTIME_API_PROXY) {
+            // Capture the original value before we overwrite it, so extension
+            // registration can still reach the real Lambda Runtime API.
+            let original = env::var(ENV_LAMBDA_RUNTIME_API).ok();
+            let _ = ORIGINAL_LAMBDA_RUNTIME_API.set(original);
+
             // We need to overwrite the env variable because lambda_http::run()
             // calls lambda_runtime::run() which doesn't allow changing the client URI.
             //
@@ -901,7 +945,11 @@ impl Adapter<HttpConnector, Body> {
 
         // strip away Base Path if environment variable REMOVE_BASE_PATH is set.
         if let Some(base_path) = self.base_path.as_deref() {
-            path = path.trim_start_matches(base_path);
+            let stripped = path.trim_start_matches(base_path);
+            if stripped.len() != path.len() {
+                tracing::debug!(base_path = %base_path, original = %path, stripped = %stripped, "stripped base path");
+            }
+            path = stripped;
         }
 
         if matches!(request_context, RequestContext::PassThrough) && parts.method == Method::POST {
@@ -913,13 +961,13 @@ impl Adapter<HttpConnector, Body> {
         // include request context in http header "x-amzn-request-context"
         req_headers.insert(
             HeaderName::from_static("x-amzn-request-context"),
-            HeaderValue::from_bytes(serde_json::to_string(&request_context)?.as_bytes())?,
+            HeaderValue::from_bytes(&strip_forbidden_header_bytes(&serde_json::to_string(&request_context)?))?,
         );
 
         // include lambda context in http header "x-amzn-lambda-context"
         req_headers.insert(
             HeaderName::from_static("x-amzn-lambda-context"),
-            HeaderValue::from_bytes(serde_json::to_string(&lambda_context)?.as_bytes())?,
+            HeaderValue::from_bytes(&strip_forbidden_header_bytes(&serde_json::to_string(&lambda_context)?))?,
         );
 
         // Multi-tenancy support: propagate tenant_id from Lambda context
@@ -1243,22 +1291,31 @@ mod tests {
         assert!(codes.is_empty());
     }
 
+    // Combined into one test because ORIGINAL_LAMBDA_RUNTIME_API is a process-wide
+    // OnceLock that can only be set once — separate tests would race on it.
     #[test]
-    fn test_apply_runtime_proxy_config_sets_env() {
-        // Clean up first
+    fn test_apply_runtime_proxy_config() {
+        // Cleanup
         env::remove_var(ENV_LAMBDA_RUNTIME_API_PROXY);
         env::remove_var(ENV_LAMBDA_RUNTIME_API);
 
-        // When proxy is not set, runtime API should not be changed
+        // Case 1: proxy unset → no overwrite, no capture
         Adapter::apply_runtime_proxy_config();
         assert!(env::var(ENV_LAMBDA_RUNTIME_API).is_err());
+        assert!(ORIGINAL_LAMBDA_RUNTIME_API.get().is_none());
 
-        // When proxy is set, runtime API should be overwritten
+        // Case 2: proxy set with a real original → original captured, env overwritten
+        env::set_var(ENV_LAMBDA_RUNTIME_API, "real-api:9001");
         env::set_var(ENV_LAMBDA_RUNTIME_API_PROXY, "127.0.0.1:9002");
         Adapter::apply_runtime_proxy_config();
         assert_eq!(env::var(ENV_LAMBDA_RUNTIME_API).unwrap(), "127.0.0.1:9002");
+        assert_eq!(
+            ORIGINAL_LAMBDA_RUNTIME_API.get(),
+            Some(&Some("real-api:9001".to_string())),
+            "extension registration should see the pre-proxy Runtime API"
+        );
 
-        // Clean up
+        // Cleanup
         env::remove_var(ENV_LAMBDA_RUNTIME_API_PROXY);
         env::remove_var(ENV_LAMBDA_RUNTIME_API);
     }
@@ -1375,6 +1432,129 @@ mod tests {
         request.extensions_mut().insert(make_lambda_context(None));
 
         let response = adapter.fetch_response(request).await.expect("Request failed");
+        assert_eq!(200, response.status().as_u16());
+    }
+
+    #[test]
+    fn test_strip_forbidden_header_bytes() {
+        // Tab (0x09) and printable ASCII are preserved; CR/LF, NUL, DEL, and other
+        // C0 control bytes are removed.
+        let out = strip_forbidden_header_bytes("a\tb\nc\rd\u{00}e\u{04}f\u{18}g\u{7f}h");
+        assert_eq!(out.as_ref(), b"a\tbcdefgh");
+        assert!(
+            matches!(out, Cow::Owned(_)),
+            "input had forbidden bytes — must allocate"
+        );
+
+        // UTF-8 multi-byte characters are preserved (all continuation bytes >= 0x80
+        // and lead bytes >= 0xC0 are above the 0x7F threshold).
+        let out = strip_forbidden_header_bytes("héllo");
+        assert_eq!(out.as_ref(), "héllo".as_bytes());
+    }
+
+    /// Fast path: input that is already header-safe must not allocate.
+    #[test]
+    fn test_strip_forbidden_header_bytes_all_clean() {
+        let input = r#"{"http":{"path":"/api/users"},"requestId":"abc-123"}"#;
+        let out = strip_forbidden_header_bytes(input);
+        assert_eq!(out.as_ref(), input.as_bytes());
+        assert!(
+            matches!(out, Cow::Borrowed(_)),
+            "header-safe input must not allocate (Cow::Borrowed expected)"
+        );
+
+        // Tab is allowed and should also stay on the borrowed fast path.
+        let input = "tab\there";
+        let out = strip_forbidden_header_bytes(input);
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out.as_ref(), input.as_bytes());
+    }
+
+    /// Regression test for https://github.com/aws/aws-lambda-web-adapter/issues/732
+    ///
+    /// When the Lambda event's request context contains bytes that are forbidden in
+    /// HTTP header values (control bytes < 0x20 except \t, and 0x7F), serializing
+    /// the request context to JSON and inserting it as `x-amzn-request-context`
+    /// must not fail. Such bytes can appear when scanners (e.g. nuclei) probe a
+    /// Lambda Function URL with crafted paths.
+    #[tokio::test]
+    async fn test_request_context_with_control_bytes_in_path() {
+        let app_server = MockServer::start();
+        app_server.mock(|when, then| {
+            when.method(GET).is_true(|req| {
+                let headers = req.headers();
+
+                // --- x-amzn-request-context: this is where the control bytes
+                // came from (echoed via request_context.http.path).
+                let Some(req_ctx) = headers.get("x-amzn-request-context") else {
+                    return false;
+                };
+                if req_ctx
+                    .as_bytes()
+                    .iter()
+                    .any(|&b| b != b'\t' && (b < 0x20 || b == 0x7F))
+                {
+                    return false;
+                }
+                // Stripped JSON must deserialize back into the typed RequestContext
+                // (not just generic JSON) — proving the structure consumers rely on
+                // survives sanitization.
+                let Ok(ctx) = serde_json::from_slice::<RequestContext>(req_ctx.as_bytes()) else {
+                    return false;
+                };
+                if !matches!(ctx, RequestContext::ApiGatewayV2(_)) {
+                    return false;
+                }
+
+                // --- x-amzn-lambda-context: parallel assertion — the second
+                // call site also goes through strip_forbidden_header_bytes, so
+                // the header must be present, header-safe, and round-trip into
+                // a Context value.
+                let Some(lambda_ctx) = headers.get("x-amzn-lambda-context") else {
+                    return false;
+                };
+                if lambda_ctx
+                    .as_bytes()
+                    .iter()
+                    .any(|&b| b != b'\t' && (b < 0x20 || b == 0x7F))
+                {
+                    return false;
+                }
+                serde_json::from_slice::<serde_json::Value>(lambda_ctx.as_bytes())
+                    .ok()
+                    .and_then(|v| v.get("request_id").and_then(|r| r.as_str()).map(str::to_owned))
+                    .is_some()
+            });
+            then.status(200).body("OK");
+        });
+
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/".to_string(),
+            ..Default::default()
+        };
+
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // Build an ApiGatewayV2 request whose request_context.http.path contains
+        // control bytes that http::HeaderValue rejects (DEL = 0x7F, plus 0x04, 0x18).
+        let v2_req = lambda_http::request::LambdaRequest::ApiGatewayV2({
+            use lambda_http::aws_lambda_events::apigw::ApiGatewayV2httpRequest;
+            let mut req = ApiGatewayV2httpRequest::default();
+            req.raw_path = Some("/hello".into());
+            req.request_context.http.method = Method::GET;
+            req.request_context.http.path = Some("/\u{04}\u{7f}\u{18};{curl,http://test.oast.site}".into());
+            req
+        });
+        let mut request = Request::from(v2_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+
+        let response = adapter
+            .fetch_response(request)
+            .await
+            .expect("Request failed despite control bytes in request context path");
         assert_eq!(200, response.status().as_u16());
     }
 }
