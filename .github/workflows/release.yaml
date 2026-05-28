@@ -624,76 +624,76 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
-  deploy-china-prod:
-    needs: [load-matrices, deploy-china-gamma, package-china-prod]
-    runs-on: ubuntu-24.04
-    environment: prod
-    strategy:
-      matrix: ${{fromJSON(needs.load-matrices.outputs.china-prod)}}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
-        with:
-          python-version: "3.13"
-      - uses: aws-actions/setup-sam@v2
-        with:
-          use-installer: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+  # deploy-china-prod:
+  #   needs: [load-matrices, deploy-china-gamma, package-china-prod]
+  #   runs-on: ubuntu-24.04
+  #   environment: prod
+  #   strategy:
+  #     matrix: ${{fromJSON(needs.load-matrices.outputs.china-prod)}}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v4
+  #       with:
+  #         python-version: "3.13"
+  #     - uses: aws-actions/setup-sam@v2
+  #       with:
+  #         use-installer: true
+  #         token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Assume the github runner role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ matrix.region }}
-          role-to-assume: ${{ env.GITHUB_RUNNER_CHINA_ROLE }}
-          audience: sts.amazonaws.com.cn
+  #     - name: Assume the github runner role
+  #       uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         aws-region: ${{ matrix.region }}
+  #         role-to-assume: ${{ env.GITHUB_RUNNER_CHINA_ROLE }}
+  #         audience: sts.amazonaws.com.cn
 
-      - name: Assume the china pipeline user role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-skip-session-tagging: true
-          audience: sts.amazonaws.com.cn
-          aws-region: ${{ matrix.region }}
-          role-to-assume: ${{ matrix.pipeline_execution_role }}
+  #     - name: Assume the china pipeline user role
+  #       uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+  #         aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+  #         aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+  #         role-skip-session-tagging: true
+  #         audience: sts.amazonaws.com.cn
+  #         aws-region: ${{ matrix.region }}
+  #         role-to-assume: ${{ matrix.pipeline_execution_role }}
 
-      - name: Add cargo pkg version to env vars
-        run: |
-          echo "CARGO_PKG_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')" >> $GITHUB_ENV
+  #     - name: Add cargo pkg version to env vars
+  #       run: |
+  #         echo "CARGO_PKG_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')" >> $GITHUB_ENV
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: packaged-china-prod-x86_64-${{ matrix.region }}.yaml
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: packaged-china-prod-x86_64-${{ matrix.region }}.yaml
 
-      - name: Deploy x86_64 Layer to all regions in china
-        run: |
-          sam deploy --stack-name lambda-adapter-prod-x86-${{ matrix.region }} \
-            --template packaged-china-prod-x86_64-${{ matrix.region }}.yaml \
-            --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
-            --capabilities CAPABILITY_IAM \
-            --region ${{ matrix.region }} \
-            --s3-bucket ${{ matrix.artifacts_bucket }} \
-            --image-repository ${{ matrix.image_repository }} \
-            --no-fail-on-empty-changeset \
-            --role-arn ${{ matrix.cloudformation_execution_role }}
+  #     - name: Deploy x86_64 Layer to all regions in china
+  #       run: |
+  #         sam deploy --stack-name lambda-adapter-prod-x86-${{ matrix.region }} \
+  #           --template packaged-china-prod-x86_64-${{ matrix.region }}.yaml \
+  #           --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
+  #           --capabilities CAPABILITY_IAM \
+  #           --region ${{ matrix.region }} \
+  #           --s3-bucket ${{ matrix.artifacts_bucket }} \
+  #           --image-repository ${{ matrix.image_repository }} \
+  #           --no-fail-on-empty-changeset \
+  #           --role-arn ${{ matrix.cloudformation_execution_role }}
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: packaged-china-prod-arm64-${{ matrix.region }}.yaml
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: packaged-china-prod-arm64-${{ matrix.region }}.yaml
 
-      - name: Deploy arm64 Layer to supported china regions
-        if: ${{ matrix.arm64_supported }}
-        run: |
-          sam deploy --stack-name lambda-adapter-prod-arm64-${{ matrix.region }} \
-            --template packaged-china-prod-arm64-${{ matrix.region }}.yaml \
-            --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
-            --capabilities CAPABILITY_IAM \
-            --region ${{ matrix.region }} \
-            --s3-bucket ${{ matrix.artifacts_bucket }} \
-            --image-repository ${{ matrix.image_repository }} \
-            --no-fail-on-empty-changeset \
-            --role-arn ${{ matrix.cloudformation_execution_role }}
+  #     - name: Deploy arm64 Layer to supported china regions
+  #       if: ${{ matrix.arm64_supported }}
+  #       run: |
+  #         sam deploy --stack-name lambda-adapter-prod-arm64-${{ matrix.region }} \
+  #           --template packaged-china-prod-arm64-${{ matrix.region }}.yaml \
+  #           --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
+  #           --capabilities CAPABILITY_IAM \
+  #           --region ${{ matrix.region }} \
+  #           --s3-bucket ${{ matrix.artifacts_bucket }} \
+  #           --image-repository ${{ matrix.image_repository }} \
+  #           --no-fail-on-empty-changeset \
+  #           --role-arn ${{ matrix.cloudformation_execution_role }}
 
   publish-to-public-ecr:
     needs: [deploy-prod]
