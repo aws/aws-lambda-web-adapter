@@ -1,6 +1,6 @@
 [package]
 name = "lambda_web_adapter"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
     "Harold Sun <sunhua@amazon.com>",
     "David Calavera <dcalaver@amazon.com>",
