@@ -6,9 +6,10 @@ name: Commit Lint Comment
 # performing privileged operations in response to fork PRs:
 # https://securitylab.github.com/research/github-actions-preventing-pwn-requests/
 #
-# Security: this workflow does not check out PR code. It only reads two
-# artifact files (a numeric PR number and the commitlint text output) which
-# are validated/sanitized before use.
+# Security: this workflow does not check out PR code. The PR number is
+# resolved from the trusted workflow_run event payload (not the artifact),
+# and the commitlint text output is rendered inside a dynamically sized
+# code fence so embedded backticks cannot escape it.
 on:
   workflow_run:
     workflows: ["Commit Lint"]
@@ -43,31 +44,46 @@ jobs:
         run: |
           echo "No commitlint-failure artifact uploaded by the Commit Lint run; nothing to comment."
 
-      - name: Validate PR number
+      - name: Resolve PR number from workflow_run
         if: steps.download.outcome == 'success'
         id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
         shell: bash
         run: |
-          pr_raw="$(cat lint-artifact/pr-number.txt)"
-          # Strip whitespace, then verify the value is a positive integer with
-          # a sane upper bound. The artifact comes from an unprivileged workflow
-          # so its contents are untrusted; we only allow it to drive a PR-number
-          # input after this check.
-          pr="$(echo "$pr_raw" | tr -d '[:space:]')"
-          if ! [[ "$pr" =~ ^[0-9]+$ ]] || [ "$pr" -lt 1 ] || [ "$pr" -gt 9999999 ]; then
-            echo "Invalid PR number in artifact: '$pr_raw'"
-            exit 1
+          # Derive PR number from trusted GitHub event data, not the artifact.
+          # The artifact is produced by an unprivileged pull_request workflow
+          # whose workflow file PR authors control on fork PRs, so any value
+          # they write into the artifact could be used to spoof comments onto
+          # a different PR. head_sha on the workflow_run event is GitHub-set
+          # and trustworthy.
+          pr=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+                 --jq '.[] | select(.state=="open") | .number' | head -n1)
+          if ! [[ "$pr" =~ ^[0-9]+$ ]]; then
+            echo "No open PR found for head SHA $HEAD_SHA; nothing to comment."
+            exit 0
           fi
           echo "pr_number=$pr" >> "$GITHUB_OUTPUT"
 
       - name: Post comment
-        if: steps.download.outcome == 'success'
+        if: steps.download.outcome == 'success' && steps.pr.outputs.pr_number != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
+          # The artifact contents are untrusted PR-author-controlled commit
+          # text. Pick a code-fence length that is at least one backtick
+          # longer than the longest backtick run in the file, so the author
+          # cannot escape the fence by embedding ``` in a commit message.
+          max_ticks=$(grep -oE '`+' lint-artifact/commitlint-output.txt 2>/dev/null \
+                        | awk '{ if (length > m) m = length } END { print m+0 }')
+          fence_len=$((max_ticks + 1))
+          [ "$fence_len" -lt 3 ] && fence_len=3
+          fence=$(printf '`%.0s' $(seq 1 "$fence_len"))
           {
             echo "## Commit message lint failed"
             echo ""
@@ -75,12 +91,9 @@ jobs:
             echo ""
             echo "<details><summary>commitlint output</summary>"
             echo ""
-            echo '```'
-            # The artifact contents are untrusted PR-author-controlled commit
-            # text. We render it inside a fenced code block so it cannot inject
-            # markdown, and we never pass it to a shell or eval.
+            echo "$fence"
             cat lint-artifact/commitlint-output.txt
-            echo '```'
+            echo "$fence"
             echo ""
             echo "</details>"
             echo ""
