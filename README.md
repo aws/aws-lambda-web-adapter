@@ -30,7 +30,7 @@ The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local 
 Add one line to your Dockerfile:
 
 ```dockerfile
-COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 /lambda-adapter /opt/extensions/lambda-adapter
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.1 /lambda-adapter /opt/extensions/lambda-adapter
 ```
 
 Pre-compiled multi-arch images (x86_64 and arm64) are available at [public.ecr.aws/awsguru/aws-lambda-adapter](https://gallery.ecr.aws/awsguru/aws-lambda-adapter). [Non-AWS base images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html) may be used since the [Runtime Interface Client](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html#images-ric) ships with the Lambda Web Adapter.
@@ -40,8 +40,8 @@ Pre-compiled multi-arch images (x86_64 and arm64) are available at [public.ecr.a
 ### Zip Packages
 
 1. Attach the Lambda Web Adapter layer to your function:
-   - x86_64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:27`
-   - arm64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:27`
+   - x86_64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28`
+   - arm64: `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:28`
 2. Set environment variable `AWS_LAMBDA_EXEC_WRAPPER` to `/opt/bootstrap`
 3. Set function handler to your startup script, e.g. `run.sh`
 

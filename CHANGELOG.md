@@ -1,3 +1,23 @@
+## v1.0.1 - 2026-05-28
+
+### Bug Fixes
+
+- Sanitize control bytes in `x-amzn-{request,lambda}-context` headers (#734)
+- Use the original `AWS_LAMBDA_RUNTIME_API` for extension registration (#737)
+- Update `rand` and `rustls-webpki` to resolve 4 security advisories (#736)
+
+### Documentation
+
+- Update all docs and examples for 1.0.0 release (#689)
+
+### CI/CD
+
+- Fix commitlint workflow and post lint failures as PR comments (#735)
+- Declare permissions on `security_audit` workflow (#718)
+- Drop me-central-1 region and skip china-prod in the release pipeline (#744)
+
+---
+
 ## v1.0.0 - 2026-03-27
 
 ### Major Updates

@@ -41,7 +41,7 @@ class LwaStack extends Stack {
     const lwa_lambda_layer = lambda.LayerVersion.fromLayerVersionArn(
       this,
       "lwa_lambda-layer",
-      "arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayerX86:27",
+      "arn:aws:lambda:us-east-1:753240598075:layer:LambdaAdapterLayerX86:28",
     );
     const dd_layer = lambda.LayerVersion.fromLayerVersionArn(
       this,
