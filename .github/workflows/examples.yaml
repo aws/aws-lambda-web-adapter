@@ -303,3 +303,88 @@ jobs:
       - name: Stop local API
         if: always()
         run: kill $SAM_PID 2>/dev/null || true
+
+  # Response-streaming examples verified by building and running the real app,
+  # then curling /. These use a Lambda Function URL with RESPONSE_STREAM and have
+  # no API Gateway events, so sam local start-api (used by test-image/test-zip)
+  # cannot drive them. Without this job they were only lint-validated, which let
+  # a broken python-fasthtml pin (ModuleNotFoundError: sqlite_minutils) ship.
+  test-stream:
+    needs: [build-layer]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - fasthtml-response-streaming
+          - fasthtml-response-streaming-zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: layer-x86_64
+          path: /tmp/layer-x86_64
+
+      - name: Build local adapter image
+        run: |
+          chmod +x /tmp/layer-x86_64/lambda-adapter
+          printf 'FROM scratch\nCOPY --chmod=755 lambda-adapter /lambda-adapter\n' | \
+            docker build -t public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 -f- /tmp/layer-x86_64
+
+      - name: Build and start app
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          if [ "${{ matrix.example }}" = "fasthtml-response-streaming" ]; then
+            # Image example: build the app image (its Dockerfile COPYs the local
+            # adapter image built above) and run it. The app serves on 8080;
+            # map it to host 8000 so the verify step is port-agnostic. AWS_REGION
+            # lets AnthropicBedrock() construct without real creds; GET / only
+            # renders a form and never calls Bedrock.
+            docker build -t fasthtml-stream app
+            docker run -d --name fasthtml-stream \
+              -e AWS_REGION=us-east-1 -e AWS_DEFAULT_REGION=us-east-1 \
+              -p 8000:8080 fasthtml-stream
+          else
+            # Zip example: run the app directly. run.sh only adds Lambda-layer
+            # paths needed at runtime on Lambda, not locally.
+            pip install -r app/requirements.txt
+            PORT=8000 nohup python app/main.py > /tmp/app.log 2>&1 &
+            echo "APP_PID=$!" >> $GITHUB_ENV
+          fi
+
+      - name: Verify
+        run: |
+          echo "Waiting for app to start..."
+          for i in $(seq 1 90); do
+            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/ 2>/dev/null | grep -q "^[2345]"; then
+              echo "App is ready after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 90 ]; then
+              echo "App failed to start within 90s"
+              docker logs fasthtml-stream 2>/dev/null || cat /tmp/app.log 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/)
+          echo "HTTP status: $status"
+          if [[ "$status" -ge 200 && "$status" -lt 500 ]]; then
+            echo "OK: Got valid response"
+          else
+            echo "FAIL: Unexpected status $status"
+            docker logs fasthtml-stream 2>/dev/null || cat /tmp/app.log 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Stop app
+        if: always()
+        run: |
+          docker rm -f fasthtml-stream 2>/dev/null || true
+          kill $APP_PID 2>/dev/null || true
