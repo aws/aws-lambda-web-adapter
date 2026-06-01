@@ -16,7 +16,7 @@ Resources:
       CodeUri: app/
       MemorySize: 256
       Handler: run.sh
-      Runtime: nodejs20.x
+      Runtime: nodejs22.x
       Architectures:
         - x86_64
       Environment:

@@ -119,7 +119,25 @@ jobs:
 
       - name: Build
         working-directory: examples/${{ matrix.example }}
-        run: sam build
+        run: |
+          # Retry to tolerate transient registry rate limits (toomanyrequests: Rate
+          # exceeded). public.ecr.aws throttles unauthenticated pulls at ~1 req/s per
+          # source IP, and the matrix runs many jobs from shared runner IPs, so bursts
+          # collide. Exponential backoff with random jitter desynchronizes retries
+          # across jobs to avoid a thundering herd re-colliding on the same boundary.
+          max_attempts=5
+          attempt=1
+          while true; do
+            if sam build; then exit 0; fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "sam build failed after ${max_attempts} attempts"
+              exit 1
+            fi
+            delay=$(( 10 * 2 ** (attempt - 1) + RANDOM % 16 ))   # ~10/20/40/80s + 0-15s jitter
+            echo "sam build failed (attempt ${attempt}/${max_attempts}), retrying in ${delay}s..."
+            sleep "$delay"
+            attempt=$(( attempt + 1 ))
+          done
 
       - name: Start local API and verify
         working-directory: examples/${{ matrix.example }}
@@ -201,7 +219,25 @@ jobs:
 
       - name: Build
         working-directory: examples/${{ matrix.example }}
-        run: sam build
+        run: |
+          # Retry to tolerate transient registry rate limits (toomanyrequests: Rate
+          # exceeded). public.ecr.aws throttles unauthenticated pulls at ~1 req/s per
+          # source IP, and the matrix runs many jobs from shared runner IPs, so bursts
+          # collide. Exponential backoff with random jitter desynchronizes retries
+          # across jobs to avoid a thundering herd re-colliding on the same boundary.
+          max_attempts=5
+          attempt=1
+          while true; do
+            if sam build; then exit 0; fi
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "sam build failed after ${max_attempts} attempts"
+              exit 1
+            fi
+            delay=$(( 10 * 2 ** (attempt - 1) + RANDOM % 16 ))   # ~10/20/40/80s + 0-15s jitter
+            echo "sam build failed (attempt ${attempt}/${max_attempts}), retrying in ${delay}s..."
+            sleep "$delay"
+            attempt=$(( attempt + 1 ))
+          done
 
       - name: Inject local layer into build output
         working-directory: examples/${{ matrix.example }}

@@ -1,1 +1,1 @@
-python-fasthtml
+python-fasthtml==0.13.4
