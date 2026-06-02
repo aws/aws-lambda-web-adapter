@@ -1,6 +1,6 @@
 # Changelog
 
-For the full changelog with all releases and contributors, see the [GitHub Releases](https://github.com/awslabs/aws-lambda-web-adapter/releases) page.
+For the full changelog with all releases and contributors, see the [GitHub Releases](https://github.com/aws/aws-lambda-web-adapter/releases) page.
 
 ## Highlights
 

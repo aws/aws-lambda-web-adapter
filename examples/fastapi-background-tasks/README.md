@@ -4,7 +4,7 @@ A basic FastAPI application example. You can build and test it locally as a typi
 
 Using AWS Lambda Web Adapter, You can package this web application into Docker image, push to ECR, and deploy to Lambda, ECS/EKS, or EC2.
 
-The application can be deployed in an AWS account using the [Serverless Application Model](https://github.com/awslabs/serverless-application-model). The `template.yaml` file in the root folder contains the application definition.
+The application can be deployed in an AWS account using the [Serverless Application Model](https://github.com/aws/serverless-application-model). The `template.yaml` file in the root folder contains the application definition.
 
 The top level folder is a typical AWS SAM project. The `app` directory is a FastAPI application with a [Dockerfile](app/Dockerfile).
 
@@ -29,7 +29,7 @@ COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.1 /lambda-adapter /opt
 
 The following tools should be installed and configured.
 * [AWS CLI](https://aws.amazon.com/cli/)
-* [SAM CLI](https://github.com/awslabs/aws-sam-cli)
+* [SAM CLI](https://github.com/aws/aws-sam-cli)
 * [Python](https://www.python.org/)
 * [Docker](https://www.docker.com/products/docker-desktop)
 

@@ -1,6 +1,6 @@
 ## How to build it?
 
-AWS Lambda Web Adapter is written in Rust and based on [AWS Lambda Rust Runtime](https://github.com/awslabs/aws-lambda-rust-runtime).
+AWS Lambda Web Adapter is written in Rust and based on [AWS Lambda Rust Runtime](https://github.com/aws/aws-lambda-rust-runtime).
 AWS Lambda executes functions in x86_64 Amazon Linux Environment. We need to compile the adapter to that environment.
 
 ### Clone the repo
@@ -8,7 +8,7 @@ AWS Lambda executes functions in x86_64 Amazon Linux Environment. We need to com
 First, clone this repo to your local computer.
 
 ```shell
-$ git clone https://github.com/awslabs/aws-lambda-web-adapter.git
+$ git clone https://github.com/aws/aws-lambda-web-adapter.git
 $ cd aws-lambda-web-adapter
 ```
 
@@ -83,7 +83,7 @@ When these commands complete successfully, you will have the following container
 
 ### Testing
 
-Please test with the following [commands](https://github.com/awslabs/aws-lambda-web-adapter/blob/ff2dc8bddd968e74d7dc2ec56a249c56e5a3c5a7/.github/workflows/pipeline.yaml#L46-L49) before submitting a pull request:
+Please test with the following [commands](https://github.com/aws/aws-lambda-web-adapter/blob/ff2dc8bddd968e74d7dc2ec56a249c56e5a3c5a7/.github/workflows/pipeline.yaml#L46-L49) before submitting a pull request:
 1. `cargo fmt -- --check`
 1. `cargo clippy -- -Dwarnings`
 1. `cargo nextest run`

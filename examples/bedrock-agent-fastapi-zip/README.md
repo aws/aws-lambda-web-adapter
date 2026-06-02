@@ -2,7 +2,7 @@
 
 This project demonstrates the integration of "Agents for Amazon Bedrock" with a FastAPI application on AWS Lambda. It showcases how to effectively build an Agents for Amazon Bedrock within an serverless FastAPI application environment.
 
-The application can be deployed in an AWS account using the [Serverless Application Model](https://github.com/awslabs/serverless-application-model). The `template.yaml` file in the root folder contains the application definition.
+The application can be deployed in an AWS account using the [Serverless Application Model](https://github.com/aws/serverless-application-model). The `template.yaml` file in the root folder contains the application definition.
 
 ## How does it work?
 
@@ -21,7 +21,7 @@ In this example, we build a FastAPI app to query S3 buckets in the user's AWS ac
 The following tools should be installed and configured.
 
 * [AWS CLI](https://aws.amazon.com/cli/)
-* [SAM CLI](https://github.com/awslabs/aws-sam-cli)
+* [SAM CLI](https://github.com/aws/aws-sam-cli)
 * [Python](https://www.python.org/)
 * [Docker](https://www.docker.com/products/docker-desktop)
 

@@ -5,7 +5,7 @@ Description: >
 
   Sample SAM Template for deno-zip
 
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+# More info about Globals: https://github.com/aws/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
     Timeout: 10
@@ -13,7 +13,7 @@ Globals:
 
 Resources:
   DenoFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/aws/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
     Properties:
       CodeUri: src
       Handler: app
@@ -26,7 +26,7 @@ Resources:
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28
       MemorySize: 512
-      Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
+      Environment: # More info about Env Vars: https://github.com/aws/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
         Variables:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
           DENO_DIR: /tmp

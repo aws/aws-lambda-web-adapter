@@ -56,6 +56,6 @@ If you create your Zip package on Windows, your startup script (e.g. `run.sh`) m
 1. **Use LF line endings** — Windows defaults to CRLF (`\r\n`), which causes `/bin/sh` to fail with `cannot execute: required file not found`.
 2. **Set Unix file permissions to 755** — Zip files created on Windows don't preserve Unix execute permissions.
 
-Most zip utilities on Windows don't handle Unix permissions. You can work around this by using WSL, a build script that sets permissions explicitly, or a tool like `7-Zip` with the `-mcu` flag. See [#611](https://github.com/awslabs/aws-lambda-web-adapter/issues/611) for more details.
+Most zip utilities on Windows don't handle Unix permissions. You can work around this by using WSL, a build script that sets permissions explicitly, or a tool like `7-Zip` with the `-mcu` flag. See [#611](https://github.com/aws/aws-lambda-web-adapter/issues/611) for more details.
 
-For a complete working example, see the [Express.js in Zip](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/expressjs-zip) example.
+For a complete working example, see the [Express.js in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/expressjs-zip) example.

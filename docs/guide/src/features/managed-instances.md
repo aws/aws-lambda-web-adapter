@@ -17,4 +17,4 @@ When using Lambda Managed Instances, keep these points in mind:
 
 Lambda Managed Instances works with both buffered and response streaming modes.
 
-Check out the [FastAPI with Response Streaming on Lambda Managed Instances](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming-lmi) example.
+Check out the [FastAPI with Response Streaming on Lambda Managed Instances](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming-lmi) example.

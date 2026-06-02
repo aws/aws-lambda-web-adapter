@@ -4,7 +4,7 @@ Run web applications on AWS Lambda — with zero code changes.
 
 AWS Lambda Web Adapter lets developers build web apps with familiar frameworks (Express.js, Next.js, Flask, SpringBoot, ASP.NET, Laravel, and anything that speaks HTTP 1.1/1.0) and run them on AWS Lambda. The same Docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local machines.
 
-![Lambda Web Adapter Overview](https://github.com/awslabs/aws-lambda-web-adapter/raw/main/docs/images/lambda-adapter-overview.png)
+![Lambda Web Adapter Overview](https://github.com/aws/aws-lambda-web-adapter/raw/main/docs/images/lambda-adapter-overview.png)
 
 ## Key Features
 
@@ -29,7 +29,7 @@ AWS Lambda Web Adapter runs as a [Lambda Extension](https://docs.aws.amazon.com/
 4. Incoming Lambda events are converted to HTTP requests and forwarded to your app
 5. Your app's HTTP responses are converted back to Lambda event responses
 
-![Lambda Adapter Runtime](https://github.com/awslabs/aws-lambda-web-adapter/raw/main/docs/images/lambda-adapter-runtime.png)
+![Lambda Adapter Runtime](https://github.com/aws/aws-lambda-web-adapter/raw/main/docs/images/lambda-adapter-runtime.png)
 
 ## Pre-built Binaries
 
