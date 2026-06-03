@@ -160,7 +160,7 @@ AWS_LWA_READINESS_CHECK_HEALTHY_STATUS=100-399
 
 Several projects also provide similar capabilities as language specific packages/frameworks.
 
-- [Serverless Java Container](https://github.com/awslabs/aws-serverless-java-container)
+- [Serverless Java Container](https://github.com/aws/serverless-java-container)
 - [Serverless Express](https://github.com/vendia/serverless-express)
 - [Serverless Python - Zappa](https://github.com/zappa/Zappa)
 - [Serverless Rails - Lamby](https://github.com/customink/lamby)

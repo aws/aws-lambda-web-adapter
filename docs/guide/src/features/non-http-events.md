@@ -39,6 +39,6 @@ app.post('/events', (req, res) => {
 
 ## Examples
 
-- [SQS Express.js](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/sqs-expressjs)
-- [Bedrock Agent FastAPI](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/bedrock-agent-fastapi)
-- [Bedrock Agent FastAPI in Zip](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/bedrock-agent-fastapi-zip)
+- [SQS Express.js](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/sqs-expressjs)
+- [Bedrock Agent FastAPI](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/bedrock-agent-fastapi)
+- [Bedrock Agent FastAPI in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/bedrock-agent-fastapi-zip)

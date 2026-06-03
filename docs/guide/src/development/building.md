@@ -1,6 +1,6 @@
 # Building from Source
 
-AWS Lambda Web Adapter is written in Rust and based on the [AWS Lambda Rust Runtime](https://github.com/awslabs/aws-lambda-rust-runtime).
+AWS Lambda Web Adapter is written in Rust and based on the [AWS Lambda Rust Runtime](https://github.com/aws/aws-lambda-rust-runtime).
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ AWS Lambda Web Adapter is written in Rust and based on the [AWS Lambda Rust Runt
 ## Clone the Repository
 
 ```bash
-git clone https://github.com/awslabs/aws-lambda-web-adapter.git
+git clone https://github.com/aws/aws-lambda-web-adapter.git
 cd aws-lambda-web-adapter
 ```
 

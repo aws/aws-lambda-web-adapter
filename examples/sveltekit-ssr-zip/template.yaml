@@ -5,14 +5,14 @@ Description: >
 
   Sample SAM Template for sveltekit-ssr-zip
   
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+# More info about Globals: https://github.com/aws/serverless-application-model/blob/master/docs/globals.rst
 Globals:
   Function:
     Timeout: 3
 
 Resources:
   SvelteKitSsrFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/aws/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
     Properties:
       CodeUri: app
       Handler: run.sh

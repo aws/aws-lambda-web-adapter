@@ -39,7 +39,7 @@ The adapter automatically detects binary responses based on the `Content-Type` h
 ## Technology Stack
 
 - Written in Rust
-- Built on [AWS Lambda Rust Runtime](https://github.com/awslabs/aws-lambda-rust-runtime) (`lambda_http` crate)
+- Built on [AWS Lambda Rust Runtime](https://github.com/aws/aws-lambda-rust-runtime) (`lambda_http` crate)
 - Uses `hyper` as the HTTP client
 - Uses `tower` for middleware (compression)
 - Compiled to static musl binaries for x86_64 and aarch64

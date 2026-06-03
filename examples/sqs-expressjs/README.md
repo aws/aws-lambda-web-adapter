@@ -4,7 +4,7 @@ This project demonstrates the integration of Amazon Simple Queue Service (SQS) w
 
 In this Express.js application integrated with Amazon SQS, there is no explicit code required to poll the SQS queue. The AWS Lambda handles the polling of the SQS queue and Lambda Web Adapter forwards the event payload to the Express.js application vith a HTTP POST request. This simplifies the application code and allows developers to focus on processing the event payload rather than managing the queue polling logic.
 
-The application can be deployed in an AWS account using the [Serverless Application Model](https://github.com/awslabs/serverless-application-model). The `template.yaml` file in the root folder contains the application definition.
+The application can be deployed in an AWS account using the [Serverless Application Model](https://github.com/aws/serverless-application-model). The `template.yaml` file in the root folder contains the application definition.
 
 The top level folder is a typical AWS SAM project. The `app` directory is an express.js application with a [Dockerfile](app/Dockerfile).
 
@@ -31,7 +31,7 @@ COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.1 /lambda-adapter /opt
 The following tools should be installed and configured.
 
 * [AWS CLI](https://aws.amazon.com/cli/)
-* [SAM CLI](https://github.com/awslabs/aws-sam-cli)
+* [SAM CLI](https://github.com/aws/aws-sam-cli)
 * [Node](https://nodejs.org/en/)
 * [Docker](https://www.docker.com/products/docker-desktop)
 

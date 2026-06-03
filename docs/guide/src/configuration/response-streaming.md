@@ -28,8 +28,8 @@ Response streaming is useful for:
 
 ## Examples
 
-- [FastAPI with Response Streaming](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming)
-- [FastAPI with Response Streaming in Zip](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming-zip)
-- [Next.js Response Streaming](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/nextjs-response-streaming)
-- [SpringBoot Response Streaming](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/springboot-response-streaming-zip)
-- [FastHTML with Response Streaming](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/fasthtml-response-streaming)
+- [FastAPI with Response Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming)
+- [FastAPI with Response Streaming in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming-zip)
+- [Next.js Response Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/nextjs-response-streaming)
+- [SpringBoot Response Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/springboot-response-streaming-zip)
+- [FastHTML with Response Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fasthtml-response-streaming)

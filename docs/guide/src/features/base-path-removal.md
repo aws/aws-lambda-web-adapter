@@ -16,4 +16,4 @@ AWS_LWA_REMOVE_BASE_PATH=/orders
 
 A request to `/orders/123` will be forwarded to your app as `/123`.
 
-See the [SpringBoot example](https://github.com/awslabs/aws-lambda-web-adapter/tree/main/examples/springboot) for a working implementation.
+See the [SpringBoot example](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/springboot) for a working implementation.

@@ -11,7 +11,7 @@ build-dir = "../../docs-site"
 [output.html]
 default-theme = "light"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/awslabs/aws-lambda-web-adapter"
+git-repository-url = "https://github.com/aws/aws-lambda-web-adapter"
 git-repository-icon = "fa-github"
 site-url = "/aws-lambda-web-adapter/"
 additional-css = ["theme/custom.css"]
