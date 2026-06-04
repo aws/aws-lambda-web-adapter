@@ -1,3 +1,4 @@
+import os
 from anthropic import AnthropicBedrock
 import secrets
 from fasthtml.common import *
@@ -57,4 +58,4 @@ async def send(topic: str):
     return StreamingResponse(story_generator(content), media_type="text/plain", 
                              headers={"X-Transfer-Encoding": "chunked"})
 
-serve(port=8080, reload=True)
+serve(port=int(os.environ.get("PORT", "8080")), reload=True)

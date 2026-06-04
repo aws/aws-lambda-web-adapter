@@ -291,7 +291,7 @@ jobs:
   #
   # `kind` selects how the app is launched:
   #   image        - build the app image (its Dockerfile COPYs the local adapter
-  #                  image built below) and run it; map host 8000 to `appport`.
+  #                  image built below) and run it with PORT=8000.
   #   zip-fasthtml - run `python app/main.py` (FastHTML's serve() binds 8000).
   # AWS_REGION is set so boto3 / AnthropicBedrock clients construct without real
   # creds; the verified routes only render UI and never call Bedrock.
@@ -302,7 +302,7 @@ jobs:
       fail-fast: false
       matrix:
         example:
-          - { name: fasthtml-response-streaming, kind: image, appport: "8080", path: /, expect_body: "Serverless Bedtime" }
+          - { name: fasthtml-response-streaming, kind: image, path: /, expect_body: "Serverless Bedtime" }
           - { name: fasthtml-response-streaming-zip, kind: zip-fasthtml, path: /, expect_body: "Click to stream" }
     steps:
       - uses: actions/checkout@v4
@@ -335,14 +335,13 @@ jobs:
         working-directory: examples/${{ matrix.example.name }}
         env:
           KIND: ${{ matrix.example.kind }}
-          APPPORT: ${{ matrix.example.appport }}
         run: |
           case "$KIND" in
             image)
               docker build -t stream-app app
               docker run -d --name stream-app \
                 -e PORT=8000 -e AWS_REGION=us-east-1 -e AWS_DEFAULT_REGION=us-east-1 \
-                -p "8000:${APPPORT}" stream-app
+                -p "8000:8000" stream-app
               ;;
             zip-fasthtml)
               pip install -r app/requirements.txt
