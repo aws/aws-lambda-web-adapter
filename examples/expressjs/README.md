@@ -11,7 +11,8 @@ The top level folder is a typical AWS SAM project. The `app` directory is an exp
 ```dockerfile
 FROM public.ecr.aws/docker/library/node:16.13.2-stretch-slim
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.0.1 /lambda-adapter /opt/extensions/lambda-adapter
-EXPOSE 8080
+ENV PORT=8000
+EXPOSE 8000
 WORKDIR "/var/task"
 ADD src/package.json /var/task/package.json
 ADD src/package-lock.json /var/task/package-lock.json
@@ -69,12 +70,12 @@ $ curl https://xxxxxxxxxx.execute-api.us-west-2.amazonaws.com/
 We can run the same docker image locally, so that we know it can be deployed to ECS Fargate and EKS EC2 without code changes.
 
 ```shell
-$ docker run -d -p 8080:8080 {ECR Image}
+$ docker run -d -p 8000:8000 {ECR Image}
 
 ```
 
 Use curl to verify the docker container works.
 
 ```shell
-$ curl localhost:8080/ 
+$ curl localhost:8000/ 
 ```

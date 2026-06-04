@@ -24,6 +24,9 @@ Resources:
         Variables:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
           RUST_LOG: info
+          # Listen on 8000 so the app doesn't collide with SAM's Runtime
+          # Interface Emulator on 8080 during local testing.
+          PORT: 8000
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28
       Events:

@@ -76,7 +76,9 @@ jobs:
           name: layer-x86_64
           path: layer-x86_64/
 
-  # Docker-based examples verified with sam local start-api.
+  # Docker-based examples verified with sam local start-api. Each matrix entry
+  # asserts an exact status (and optional body substring) via verify-http.sh,
+  # not just liveness.
   # Excluded: nginx, php, flask, aspnet-mvc (web app hardcodes port 8080
   # which conflicts with SAM's Lambda Runtime Interface Emulator).
   test-image:
@@ -86,14 +88,14 @@ jobs:
       fail-fast: false
       matrix:
         example:
-          - expressjs
-          - fastapi
-          - fastapi-background-tasks
-          - fasthtml
-          - gin
-          - nextjs
-          - remix
-          - springboot
+          - { name: expressjs, path: /, expect_body: "Hi there!" }
+          - { name: fastapi, path: /, expect_body: "message" }
+          - { name: fastapi-background-tasks, path: /, expect_body: "message" }
+          - { name: fasthtml, path: /, expect_body: "Hello World" }
+          - { name: gin, path: /, expect_body: "message" }
+          - { name: nextjs, path: /, expect_body: "Next.js Logo" }
+          - { name: remix, path: /, expect_body: "Welcome to" }
+          - { name: springboot, path: /v1/, expect_body: "Hello, world!" }
     steps:
       - uses: actions/checkout@v4
 
@@ -113,12 +115,21 @@ jobs:
 
       - name: Build local adapter image
         run: |
+          # Build the local adapter under every tag the example Dockerfiles
+          # reference, so each example's `docker build` (COPY --from=...:<tag>)
+          # uses the locally compiled binary instead of pulling the released
+          # image. Deriving the tags from the Dockerfiles keeps CI in lockstep
+          # with them (no hardcoded version to forget at release time).
           chmod +x /tmp/layer-x86_64/lambda-adapter
-          printf 'FROM scratch\nCOPY --chmod=755 lambda-adapter /lambda-adapter\n' | \
-            docker build -t public.ecr.aws/awsguru/aws-lambda-adapter:1.0.1 -f- /tmp/layer-x86_64
+          tags=$(grep -rhoE 'aws-lambda-adapter:[0-9A-Za-z._-]+' examples | sed 's/.*://' | sort -u)
+          echo "Building local adapter for tags: $tags"
+          for tag in $tags; do
+            printf 'FROM scratch\nCOPY --chmod=755 lambda-adapter /lambda-adapter\n' | \
+              docker build -t public.ecr.aws/awsguru/aws-lambda-adapter:$tag -f- /tmp/layer-x86_64
+          done
 
       - name: Build
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/${{ matrix.example.name }}
         run: |
           # Retry to tolerate transient registry rate limits (toomanyrequests: Rate
           # exceeded). public.ecr.aws throttles unauthenticated pulls at ~1 req/s per
@@ -140,43 +151,29 @@ jobs:
           done
 
       - name: Start local API and verify
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/${{ matrix.example.name }}
         run: |
-          # Set PORT=8000 to avoid conflict with SAM's RIE on port 8080
+          # Set PORT=8000 to avoid conflict with SAM's RIE on port 8080.
+          # Start and verify in the same step so the backgrounded sam local
+          # stays attached to this shell while requests are served (splitting
+          # it across steps races the container warm-up and yields 500s).
           echo '{"Parameters":{"PORT":"8000"}}' > /tmp/env.json
           sam local start-api --port 3000 --warm-containers EAGER --container-env-vars /tmp/env.json &
-          SAM_PID=$!
-          echo "SAM_PID=$SAM_PID" >> $GITHUB_ENV
-
-          echo "Waiting for local API to start..."
-          for i in $(seq 1 90); do
-            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ 2>/dev/null | grep -q "^[2345]"; then
-              echo "API is ready after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 90 ]; then
-              echo "API failed to start within 90s"
-              kill $SAM_PID 2>/dev/null || true
-              exit 1
-            fi
-            sleep 1
-          done
-
-          status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/)
-          echo "HTTP status: $status"
-          if [[ "$status" -ge 200 && "$status" -lt 500 ]]; then
-            echo "OK: Got valid response"
-          else
-            echo "FAIL: Unexpected status $status"
-            kill $SAM_PID 2>/dev/null || true
-            exit 1
-          fi
+          echo "SAM_PID=$!" >> $GITHUB_ENV
+          "$GITHUB_WORKSPACE/.github/scripts/verify-http.sh" \
+            http://127.0.0.1:3000 \
+            "${{ matrix.example.path }}" \
+            200 \
+            "${{ matrix.example.expect_body }}"
 
       - name: Stop local API
         if: always()
         run: kill $SAM_PID 2>/dev/null || true
 
-  # Zip-based examples verified with local layer.
+  # Zip-based examples verified with local layer. Each matrix entry asserts an
+  # exact status (and optional body substring) via verify-http.sh.
+  # `port` is the app's listening port, passed through to the adapter via the
+  # PORT parameter; it must differ from SAM's RIE port (8080).
   # Excluded: aspnet-*-zip (hardcode port 8080),
   # bun/nginx/php-zip (need third-party layers), arm64 examples (javalin, rust-*),
   # nextjs-zip (Makefile produces a zip artifact incompatible with sam local).
@@ -187,14 +184,14 @@ jobs:
       fail-fast: false
       matrix:
         example:
-          - deno-zip
-          - expressjs-zip
-          - fastapi-zip
-          - fasthtml-zip
-          - flask-zip
-          - gin-zip
-          - remix-zip
-          - springboot-zip
+          - { name: deno-zip, path: /, expect_body: "success", port: "8000" }
+          - { name: expressjs-zip, path: /, expect_body: "Hi there!", port: "8000" }
+          - { name: fastapi-zip, path: /, expect_body: "message", port: "8000" }
+          - { name: fasthtml-zip, path: /, expect_body: "Hello World", port: "8000" }
+          - { name: flask-zip, path: /, expect_body: "message", port: "8000" }
+          - { name: gin-zip, path: /, expect_body: "message", port: "8000" }
+          - { name: remix-zip, path: /, expect_body: "Welcome to", port: "8000" }
+          - { name: springboot-zip, path: /v1/, expect_body: "Hello, world!", port: "8000" }
     steps:
       - uses: actions/checkout@v4
 
@@ -208,7 +205,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: denoland/setup-deno@v2
-        if: matrix.example == 'deno-zip'
+        if: matrix.example.name == 'deno-zip'
         with:
           deno-version: v2.x
 
@@ -218,7 +215,7 @@ jobs:
           path: /tmp/layer-x86_64
 
       - name: Build
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/${{ matrix.example.name }}
         run: |
           # Retry to tolerate transient registry rate limits (toomanyrequests: Rate
           # exceeded). public.ecr.aws throttles unauthenticated pulls at ~1 req/s per
@@ -240,7 +237,7 @@ jobs:
           done
 
       - name: Inject local layer into build output
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/${{ matrix.example.name }}
         run: |
           # Prepare local layer directory with correct structure
           LAYER_DIR=".aws-sam/build/LocalAdapterLayer"
@@ -268,47 +265,36 @@ jobs:
           PYEOF
 
       - name: Start local API and verify
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/${{ matrix.example.name }}
         run: |
-          # Set PORT=8000 to avoid conflict with SAM's RIE on port 8080
-          echo '{"Parameters":{"PORT":"8000"}}' > /tmp/env.json
+          # Pass the app's listening port via PORT (must differ from RIE's 8080).
+          # Start and verify in the same step so the backgrounded sam local
+          # stays attached to this shell while requests are served (splitting
+          # it across steps races the container warm-up and yields 500s).
+          echo '{"Parameters":{"PORT":"${{ matrix.example.port }}"}}' > /tmp/env.json
           sam local start-api --port 3000 --warm-containers EAGER --container-env-vars /tmp/env.json &
-          SAM_PID=$!
-          echo "SAM_PID=$SAM_PID" >> $GITHUB_ENV
-
-          echo "Waiting for local API to start..."
-          for i in $(seq 1 90); do
-            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ 2>/dev/null | grep -q "^[2345]"; then
-              echo "API is ready after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 90 ]; then
-              echo "API failed to start within 90s"
-              kill $SAM_PID 2>/dev/null || true
-              exit 1
-            fi
-            sleep 1
-          done
-
-          status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/)
-          echo "HTTP status: $status"
-          if [[ "$status" -ge 200 && "$status" -lt 500 ]]; then
-            echo "OK: Got valid response"
-          else
-            echo "FAIL: Unexpected status $status"
-            kill $SAM_PID 2>/dev/null || true
-            exit 1
-          fi
+          echo "SAM_PID=$!" >> $GITHUB_ENV
+          "$GITHUB_WORKSPACE/.github/scripts/verify-http.sh" \
+            http://127.0.0.1:3000 \
+            "${{ matrix.example.path }}" \
+            200 \
+            "${{ matrix.example.expect_body }}"
 
       - name: Stop local API
         if: always()
         run: kill $SAM_PID 2>/dev/null || true
 
   # Response-streaming examples verified by building and running the real app,
-  # then curling /. These use a Lambda Function URL with RESPONSE_STREAM and have
-  # no API Gateway events, so sam local start-api (used by test-image/test-zip)
-  # cannot drive them. Without this job they were only lint-validated, which let
-  # a broken python-fasthtml pin (ModuleNotFoundError: sqlite_minutils) ship.
+  # then asserting an exact status/body with verify-http.sh. These use a Lambda
+  # Function URL with RESPONSE_STREAM and have no API Gateway events, so
+  # sam local start-api (used by test-image/test-zip) cannot drive them.
+  #
+  # `kind` selects how the app is launched:
+  #   image        - build the app image (its Dockerfile COPYs the local adapter
+  #                  image built below) and run it; map host 8000 to `appport`.
+  #   zip-fasthtml - run `python app/main.py` (FastHTML's serve() binds 8000).
+  # AWS_REGION is set so boto3 / AnthropicBedrock clients construct without real
+  # creds; the verified routes only render UI and never call Bedrock.
   test-stream:
     needs: [build-layer]
     runs-on: ubuntu-24.04
@@ -316,8 +302,8 @@ jobs:
       fail-fast: false
       matrix:
         example:
-          - fasthtml-response-streaming
-          - fasthtml-response-streaming-zip
+          - { name: fasthtml-response-streaming, kind: image, appport: "8080", path: /, expect_body: "Serverless Bedtime" }
+          - { name: fasthtml-response-streaming-zip, kind: zip-fasthtml, path: /, expect_body: "Click to stream" }
     steps:
       - uses: actions/checkout@v4
 
@@ -332,59 +318,52 @@ jobs:
 
       - name: Build local adapter image
         run: |
+          # Build the local adapter under every tag the example Dockerfiles
+          # reference, so each example's `docker build` (COPY --from=...:<tag>)
+          # uses the locally compiled binary instead of pulling the released
+          # image. Deriving the tags from the Dockerfiles keeps CI in lockstep
+          # with them (no hardcoded version to forget at release time).
           chmod +x /tmp/layer-x86_64/lambda-adapter
-          printf 'FROM scratch\nCOPY --chmod=755 lambda-adapter /lambda-adapter\n' | \
-            docker build -t public.ecr.aws/awsguru/aws-lambda-adapter:1.0.0 -f- /tmp/layer-x86_64
+          tags=$(grep -rhoE 'aws-lambda-adapter:[0-9A-Za-z._-]+' examples | sed 's/.*://' | sort -u)
+          echo "Building local adapter for tags: $tags"
+          for tag in $tags; do
+            printf 'FROM scratch\nCOPY --chmod=755 lambda-adapter /lambda-adapter\n' | \
+              docker build -t public.ecr.aws/awsguru/aws-lambda-adapter:$tag -f- /tmp/layer-x86_64
+          done
 
       - name: Build and start app
-        working-directory: examples/${{ matrix.example }}
+        working-directory: examples/${{ matrix.example.name }}
+        env:
+          KIND: ${{ matrix.example.kind }}
+          APPPORT: ${{ matrix.example.appport }}
         run: |
-          if [ "${{ matrix.example }}" = "fasthtml-response-streaming" ]; then
-            # Image example: build the app image (its Dockerfile COPYs the local
-            # adapter image built above) and run it. The app serves on 8080;
-            # map it to host 8000 so the verify step is port-agnostic. AWS_REGION
-            # lets AnthropicBedrock() construct without real creds; GET / only
-            # renders a form and never calls Bedrock.
-            docker build -t fasthtml-stream app
-            docker run -d --name fasthtml-stream \
-              -e AWS_REGION=us-east-1 -e AWS_DEFAULT_REGION=us-east-1 \
-              -p 8000:8080 fasthtml-stream
-          else
-            # Zip example: run the app directly. run.sh only adds Lambda-layer
-            # paths needed at runtime on Lambda, not locally.
-            pip install -r app/requirements.txt
-            PORT=8000 nohup python app/main.py > /tmp/app.log 2>&1 &
-            echo "APP_PID=$!" >> $GITHUB_ENV
-          fi
+          case "$KIND" in
+            image)
+              docker build -t stream-app app
+              docker run -d --name stream-app \
+                -e PORT=8000 -e AWS_REGION=us-east-1 -e AWS_DEFAULT_REGION=us-east-1 \
+                -p "8000:${APPPORT}" stream-app
+              ;;
+            zip-fasthtml)
+              pip install -r app/requirements.txt
+              PORT=8000 nohup python app/main.py > /tmp/app.log 2>&1 &
+              echo "APP_PID=$!" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "Unknown kind: $KIND"; exit 1 ;;
+          esac
 
       - name: Verify
         run: |
-          echo "Waiting for app to start..."
-          for i in $(seq 1 90); do
-            if curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/ 2>/dev/null | grep -q "^[2345]"; then
-              echo "App is ready after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 90 ]; then
-              echo "App failed to start within 90s"
-              docker logs fasthtml-stream 2>/dev/null || cat /tmp/app.log 2>/dev/null || true
-              exit 1
-            fi
-            sleep 1
-          done
-
-          status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/)
-          echo "HTTP status: $status"
-          if [[ "$status" -ge 200 && "$status" -lt 500 ]]; then
-            echo "OK: Got valid response"
-          else
-            echo "FAIL: Unexpected status $status"
-            docker logs fasthtml-stream 2>/dev/null || cat /tmp/app.log 2>/dev/null || true
-            exit 1
-          fi
+          "$GITHUB_WORKSPACE/.github/scripts/verify-http.sh" \
+            http://127.0.0.1:8000 \
+            "${{ matrix.example.path }}" \
+            200 \
+            "${{ matrix.example.expect_body }}" \
+          || { echo "--- app logs ---"; docker logs stream-app 2>/dev/null || cat /tmp/app.log 2>/dev/null || true; exit 1; }
 
       - name: Stop app
         if: always()
         run: |
-          docker rm -f fasthtml-stream 2>/dev/null || true
+          docker rm -f stream-app 2>/dev/null || true
           kill $APP_PID 2>/dev/null || true
