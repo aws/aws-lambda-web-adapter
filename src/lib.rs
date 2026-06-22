@@ -880,13 +880,33 @@ impl Adapter<HttpConnector, Body> {
     /// # }
     /// ```
     pub async fn run(self) -> Result<(), Error> {
+        let hooks = Arc::new(snapstart::SnapStartHooks::new(
+            self.restored_client.clone(),
+            self.client.clone(),
+            self.domain.clone(),
+            self.snapstart_before_checkpoint_path.clone(),
+            self.snapstart_after_restore_path.clone(),
+        ));
         match (self.compression, self.invoke_mode) {
             (true, LambdaInvokeMode::Buffered) => {
                 let svc = ServiceBuilder::new().layer(CompressionLayer::new()).service(self);
-                lambda_http::run_concurrent(svc).await
+                lambda_http::runtime_concurrent(svc)
+                    .register_snapstart_resource(hooks)
+                    .run_concurrent()
+                    .await
             }
-            (_, LambdaInvokeMode::Buffered) => lambda_http::run_concurrent(self).await,
-            (_, LambdaInvokeMode::ResponseStream) => lambda_http::run_with_streaming_response_concurrent(self).await,
+            (_, LambdaInvokeMode::Buffered) => {
+                lambda_http::runtime_concurrent(self)
+                    .register_snapstart_resource(hooks)
+                    .run_concurrent()
+                    .await
+            }
+            (_, LambdaInvokeMode::ResponseStream) => {
+                lambda_http::streaming_runtime_concurrent(self)
+                    .register_snapstart_resource(hooks)
+                    .run_concurrent()
+                    .await
+            }
         }
     }
 
