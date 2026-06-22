@@ -890,24 +890,33 @@ impl Adapter<HttpConnector, Body> {
         match (self.compression, self.invoke_mode) {
             (true, LambdaInvokeMode::Buffered) => {
                 let svc = ServiceBuilder::new().layer(CompressionLayer::new()).service(self);
-                lambda_http::runtime_concurrent(svc)
-                    .register_snapstart_resource(hooks)
-                    .run_concurrent()
-                    .await
+                Self::register_and_run(lambda_http::runtime_concurrent(svc), hooks).await
             }
             (_, LambdaInvokeMode::Buffered) => {
-                lambda_http::runtime_concurrent(self)
-                    .register_snapstart_resource(hooks)
-                    .run_concurrent()
-                    .await
+                Self::register_and_run(lambda_http::runtime_concurrent(self), hooks).await
             }
             (_, LambdaInvokeMode::ResponseStream) => {
-                lambda_http::streaming_runtime_concurrent(self)
-                    .register_snapstart_resource(hooks)
-                    .run_concurrent()
-                    .await
+                Self::register_and_run(lambda_http::streaming_runtime_concurrent(self), hooks).await
             }
         }
+    }
+
+    /// Registers the SnapStart hooks on `runtime` and starts the concurrent event loop.
+    ///
+    /// Each `run()` arm builds a different runtime type (buffered vs. streaming),
+    /// so the shared "register, then run" tail lives here as a generic helper.
+    async fn register_and_run<S>(
+        runtime: lambda_http::lambda_runtime::Runtime<S>,
+        hooks: Arc<snapstart::SnapStartHooks>,
+    ) -> Result<(), Error>
+    where
+        S: lambda_http::Service<lambda_http::lambda_runtime::LambdaInvocation, Response = (), Error = Error>
+            + Clone
+            + Send
+            + 'static,
+        S::Future: Send,
+    {
+        runtime.register_snapstart_resource(hooks).run_concurrent().await
     }
 
     /// Applies runtime API proxy configuration from environment variables.
