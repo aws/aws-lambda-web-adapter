@@ -551,6 +551,7 @@ fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
 #[derive(Clone)]
 pub struct Adapter<C, B> {
     client: Arc<Client<C, B>>,
+    restored_client: Arc<OnceLock<Arc<Client<C, B>>>>,
     healthcheck_url: Url,
     healthcheck_protocol: Protocol,
     healthcheck_healthy_status: Vec<u16>,
@@ -648,6 +649,7 @@ impl Adapter<HttpConnector, Body> {
 
         Ok(Adapter {
             client: Arc::new(client),
+            restored_client: Arc::new(OnceLock::new()),
             healthcheck_url,
             healthcheck_protocol: options.readiness_check_protocol,
             healthcheck_healthy_status: options.readiness_check_healthy_status.clone(),
@@ -661,6 +663,12 @@ impl Adapter<HttpConnector, Body> {
             authorization_source: options.authorization_source.clone(),
             error_status_codes: options.error_status_codes.clone(),
         })
+    }
+
+    /// Returns the active inner-app HTTP client: the restored client if a
+    /// SnapStart restore has published one, otherwise the base client.
+    fn client(&self) -> &Arc<Client<HttpConnector, Body>> {
+        self.restored_client.get().unwrap_or(&self.client)
     }
 }
 
@@ -811,7 +819,7 @@ impl Adapter<HttpConnector, Body> {
                     .parse()
                     .expect("BUG: healthcheck_url should be valid - validated in Adapter::new()");
 
-                match self.client.get(uri).await {
+                match self.client().get(uri).await {
                     Ok(response) if self.healthcheck_healthy_status.contains(&response.status().as_u16()) => {
                         tracing::debug!("app is ready");
                         Ok(())
@@ -1016,7 +1024,7 @@ impl Adapter<HttpConnector, Body> {
         };
         let request = builder.body(Body::Binary(body_bytes))?;
 
-        let mut app_response = self.client.request(request).await?;
+        let mut app_response = self.client().request(request).await?;
 
         // Check if status code should trigger an error
         if let Some(error_codes) = &self.error_status_codes {
@@ -1592,5 +1600,33 @@ mod tests {
             .await
             .expect("Request failed despite control bytes in request context path");
         assert_eq!(200, response.status().as_u16());
+    }
+
+    #[tokio::test]
+    async fn test_client_helper_returns_restored_when_set() {
+        let options = AdapterOptions {
+            host: "127.0.0.1".to_string(),
+            port: "8080".to_string(),
+            readiness_check_port: "8080".to_string(),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // Before restore: client() returns the base client.
+        let base_ptr = Arc::as_ptr(adapter.client()) as *const ();
+
+        // Publish a fresh client.
+        let fresh = Arc::new(build_client());
+        let fresh_ptr = Arc::as_ptr(&fresh) as *const ();
+        adapter
+            .restored_client
+            .set(fresh)
+            .ok()
+            .expect("set should succeed once");
+
+        // After restore: client() returns the restored client (different pointer).
+        let now_ptr = Arc::as_ptr(adapter.client()) as *const ();
+        assert_ne!(now_ptr, base_ptr);
+        assert_eq!(now_ptr, fresh_ptr);
     }
 }
