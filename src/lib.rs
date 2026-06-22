@@ -63,6 +63,7 @@
 //! with `InvokeMode: RESPONSE_STREAM`.
 
 mod readiness;
+mod snapstart;
 
 // Environment variable names (AWS_LWA_ prefix)
 const ENV_PORT: &str = "AWS_LWA_PORT";
