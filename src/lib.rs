@@ -101,13 +101,13 @@ const ENV_LAMBDA_RUNTIME_API: &str = "AWS_LAMBDA_RUNTIME_API";
 // (Some(None)).
 static ORIGINAL_LAMBDA_RUNTIME_API: OnceLock<Option<String>> = OnceLock::new();
 
+use bytes::Bytes;
 use http::{
     header::{HeaderName, HeaderValue},
     Method, StatusCode,
 };
 use http_body::Body as HttpBody;
-use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use http_body_util::{combinators::BoxBody, BodyExt};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use lambda_http::request::RequestContext;
@@ -945,7 +945,7 @@ impl Adapter<HttpConnector, Body> {
     /// 4. Strips the base path if configured
     /// 5. Forwards the request to the web application
     /// 6. Returns the response (or error if status code is in error_status_codes)
-    async fn fetch_response(&self, event: Request) -> Result<Response<Incoming>, Error> {
+    async fn fetch_response(&self, event: Request) -> Result<Response<BoxBody<Bytes, Error>>, Error> {
         if self.async_init && !self.ready_at_init.load(Ordering::SeqCst) {
             self.is_web_ready(&self.healthcheck_url, &self.healthcheck_protocol)
                 .await;
@@ -1051,7 +1051,9 @@ impl Adapter<HttpConnector, Body> {
         tracing::debug!(status = %app_response.status(), body_size = ?app_response.body().size_hint().lower(),
             app_headers = ?app_response.headers().clone(), "responding to lambda event");
 
-        Ok(app_response)
+        // Box the body into a uniform type so synthetic responses (e.g. the 403
+        // hook-path guard) can share the return type with proxied responses.
+        Ok(app_response.map(|body| body.map_err(Error::from).boxed()))
     }
 }
 
@@ -1060,7 +1062,7 @@ impl Adapter<HttpConnector, Body> {
 /// This allows the adapter to be used directly with the Lambda runtime,
 /// which expects a `Service` that can handle Lambda events.
 impl Service<Request> for Adapter<HttpConnector, Body> {
-    type Response = Response<Incoming>;
+    type Response = Response<BoxBody<Bytes, Error>>;
     type Error = Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
