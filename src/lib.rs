@@ -78,6 +78,8 @@ const ENV_ENABLE_COMPRESSION: &str = "AWS_LWA_ENABLE_COMPRESSION";
 const ENV_INVOKE_MODE: &str = "AWS_LWA_INVOKE_MODE";
 const ENV_AUTHORIZATION_SOURCE: &str = "AWS_LWA_AUTHORIZATION_SOURCE";
 const ENV_ERROR_STATUS_CODES: &str = "AWS_LWA_ERROR_STATUS_CODES";
+const ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH: &str = "AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH";
+const ENV_SNAPSTART_AFTER_RESTORE_PATH: &str = "AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH";
 const ENV_LAMBDA_RUNTIME_API_PROXY: &str = "AWS_LWA_LAMBDA_RUNTIME_API_PROXY";
 
 // Deprecated environment variable names (without prefix)
@@ -349,6 +351,16 @@ pub struct AdapterOptions {
     /// the adapter will return an error to Lambda instead of the response.
     /// This can be useful for triggering Lambda retry behavior.
     pub error_status_codes: Option<Vec<u16>>,
+
+    /// Inner-app path POSTed before the SnapStart snapshot is taken.
+    /// When set, the adapter notifies the app so it can drain resources.
+    /// Default: `None` (phase skipped).
+    pub snapstart_before_checkpoint_path: Option<String>,
+
+    /// Inner-app path POSTed after the SnapStart restore completes.
+    /// When set, the adapter notifies the app so it can reconnect / reseed.
+    /// Default: `None` (phase skipped).
+    pub snapstart_after_restore_path: Option<String>,
 }
 
 /// Helper to get env var with deprecation warning for old name
@@ -435,6 +447,8 @@ impl Default for AdapterOptions {
             error_status_codes: env::var(ENV_ERROR_STATUS_CODES)
                 .ok()
                 .map(|codes| parse_status_codes(&codes)),
+            snapstart_before_checkpoint_path: env::var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH).ok(),
+            snapstart_after_restore_path: env::var(ENV_SNAPSTART_AFTER_RESTORE_PATH).ok(),
         }
     }
 }
@@ -1076,6 +1090,34 @@ mod tests {
         assert_eq!(parse_status_codes("invalid"), Vec::<u16>::new());
         assert_eq!(parse_status_codes("500-invalid"), Vec::<u16>::new());
         assert_eq!(parse_status_codes(""), Vec::<u16>::new());
+    }
+
+    #[test]
+    fn test_snapstart_paths_default_unset() {
+        temp_env_unset(&[
+            "AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH",
+            "AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH",
+        ]);
+        let options = AdapterOptions::default();
+        assert_eq!(options.snapstart_before_checkpoint_path, None);
+        assert_eq!(options.snapstart_after_restore_path, None);
+    }
+
+    #[test]
+    fn test_snapstart_paths_parsed_when_set() {
+        std::env::set_var("AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH", "/snapstart/before");
+        std::env::set_var("AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH", "/snapstart/after");
+        let options = AdapterOptions::default();
+        assert_eq!(options.snapstart_before_checkpoint_path.as_deref(), Some("/snapstart/before"));
+        assert_eq!(options.snapstart_after_restore_path.as_deref(), Some("/snapstart/after"));
+        std::env::remove_var("AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH");
+        std::env::remove_var("AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH");
+    }
+
+    fn temp_env_unset(keys: &[&str]) {
+        for k in keys {
+            std::env::remove_var(k);
+        }
     }
 
     #[tokio::test]
