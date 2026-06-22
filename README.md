@@ -102,6 +102,8 @@ to your application, so it never reuses a connection captured in the snapshot.
 > are never forwarded to your application, so choose paths your normal traffic
 > does not use.
 
+See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a complete, deployable application.
+
 ## Examples
 
 - [FastAPI](examples/fastapi)
@@ -111,6 +113,7 @@ to your application, so it never reuses a connection captured in the snapshot.
 - [FastAPI with Response Streaming in Zip](examples/fastapi-response-streaming-zip)
 - [FastAPI with Response Streaming on Lambda Managed Instances](examples/fastapi-response-streaming-lmi)
 - [FastAPI Response Streaming Backend with IAM Auth](examples/fastapi-backend-only-response-streaming/)
+- [FastAPI with SnapStart in Zip](examples/fastapi-snapstart-zip)
 - [Flask](examples/flask)
 - [Flask in Zip](examples/flask-zip)
 - [Serverless Django](https://github.com/aws-hebrew-book/serverless-django)  by [@efi-mk](https://github.com/efi-mk)
