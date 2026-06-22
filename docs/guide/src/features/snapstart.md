@@ -29,7 +29,7 @@ State captured in a snapshot is shared across every restored environment. Two cl
 
 ## Securing the hook paths
 
-The hook paths are control-plane operations. External requests (via API Gateway or ALB) that target a configured hook path receive `403 Forbidden` and are never forwarded to your application. The guard matches the exact configured path, so choose paths your normal application traffic does not use (for example, `/lwa/snapstart/before` and `/lwa/snapstart/after`).
+The hook paths are control-plane operations. External requests (via API Gateway or ALB) that target a configured hook path receive `403 Forbidden` and are never forwarded to your application. The guard matches the exact configured path, so choose paths your normal application traffic does not use (for example, `/snapstart/before` and `/snapstart/after`).
 
 ## Example
 
@@ -40,7 +40,7 @@ app = FastAPI()
 pool = None  # your database/connection pool
 
 
-@app.post("/lwa/snapstart/before")
+@app.post("/snapstart/before")
 async def before_checkpoint():
     # Close resources that won't survive the snapshot.
     if pool is not None:
@@ -48,7 +48,7 @@ async def before_checkpoint():
     return Response(status_code=200)
 
 
-@app.post("/lwa/snapstart/after")
+@app.post("/snapstart/after")
 async def after_restore():
     # Re-establish resources and reseed anything that must be unique.
     global pool
@@ -59,8 +59,8 @@ async def after_restore():
 Configure the function with:
 
 ```
-AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH=/lwa/snapstart/before
-AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/lwa/snapstart/after
+AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH=/snapstart/before
+AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/snapstart/after
 ```
 
 See the [fastapi-snapstart-zip example](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-snapstart-zip) for a complete, deployable application.

@@ -41,7 +41,7 @@ async def root():
     }
 
 
-@app.post("/lwa/snapstart/before")
+@app.post("/snapstart/before")
 async def before_checkpoint():
     """Called by the adapter before the snapshot is taken.
 
@@ -51,7 +51,7 @@ async def before_checkpoint():
     return Response(status_code=200)
 
 
-@app.post("/lwa/snapstart/after")
+@app.post("/snapstart/after")
 async def after_restore():
     """Called by the adapter after the environment is restored.
 

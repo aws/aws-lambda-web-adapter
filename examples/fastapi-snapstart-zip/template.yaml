@@ -23,8 +23,8 @@ Resources:
         Variables:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
           PORT: 8000
-          AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH: /lwa/snapstart/before
-          AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH: /lwa/snapstart/after
+          AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH: /snapstart/before
+          AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH: /snapstart/after
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28
       Events:
