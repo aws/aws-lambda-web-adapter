@@ -1092,32 +1092,33 @@ mod tests {
         assert_eq!(parse_status_codes(""), Vec::<u16>::new());
     }
 
+    // Both cases live in one test because they mutate the same process-global env
+    // vars; splitting them lets Rust's parallel test runner interleave the
+    // set/remove calls and clobber each other's state.
     #[test]
-    fn test_snapstart_paths_default_unset() {
-        temp_env_unset(&[
-            "AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH",
-            "AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH",
-        ]);
+    fn test_snapstart_paths() {
+        // Default case: unset env vars -> both None.
+        std::env::remove_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH);
+        std::env::remove_var(ENV_SNAPSTART_AFTER_RESTORE_PATH);
         let options = AdapterOptions::default();
         assert_eq!(options.snapstart_before_checkpoint_path, None);
         assert_eq!(options.snapstart_after_restore_path, None);
-    }
 
-    #[test]
-    fn test_snapstart_paths_parsed_when_set() {
-        std::env::set_var("AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH", "/snapstart/before");
-        std::env::set_var("AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH", "/snapstart/after");
+        // Set case: env vars present -> parsed into Some(..).
+        std::env::set_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH, "/snapstart/before");
+        std::env::set_var(ENV_SNAPSTART_AFTER_RESTORE_PATH, "/snapstart/after");
         let options = AdapterOptions::default();
-        assert_eq!(options.snapstart_before_checkpoint_path.as_deref(), Some("/snapstart/before"));
-        assert_eq!(options.snapstart_after_restore_path.as_deref(), Some("/snapstart/after"));
-        std::env::remove_var("AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH");
-        std::env::remove_var("AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH");
-    }
+        assert_eq!(
+            options.snapstart_before_checkpoint_path.as_deref(),
+            Some("/snapstart/before")
+        );
+        assert_eq!(
+            options.snapstart_after_restore_path.as_deref(),
+            Some("/snapstart/after")
+        );
 
-    fn temp_env_unset(keys: &[&str]) {
-        for k in keys {
-            std::env::remove_var(k);
-        }
+        std::env::remove_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH);
+        std::env::remove_var(ENV_SNAPSTART_AFTER_RESTORE_PATH);
     }
 
     #[tokio::test]
