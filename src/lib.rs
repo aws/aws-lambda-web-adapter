@@ -107,7 +107,7 @@ use http::{
     Method, StatusCode,
 };
 use http_body::Body as HttpBody;
-use http_body_util::{combinators::BoxBody, BodyExt};
+use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use lambda_http::request::RequestContext;
@@ -564,6 +564,8 @@ pub struct Adapter<C, B> {
     invoke_mode: LambdaInvokeMode,
     authorization_source: Option<String>,
     error_status_codes: Option<Vec<u16>>,
+    snapstart_before_checkpoint_path: Option<String>,
+    snapstart_after_restore_path: Option<String>,
 }
 
 /// Builds the hyper client used to talk to the inner web application.
@@ -662,6 +664,8 @@ impl Adapter<HttpConnector, Body> {
             invoke_mode: options.invoke_mode,
             authorization_source: options.authorization_source.clone(),
             error_status_codes: options.error_status_codes.clone(),
+            snapstart_before_checkpoint_path: options.snapstart_before_checkpoint_path.clone(),
+            snapstart_after_restore_path: options.snapstart_after_restore_path.clone(),
         })
     }
 
@@ -969,6 +973,17 @@ impl Adapter<HttpConnector, Body> {
 
         if matches!(request_context, RequestContext::PassThrough) && parts.method == Method::POST {
             path = self.pass_through_path.as_str();
+        }
+
+        // Block external traffic to the SnapStart hook paths. These routes are
+        // control-plane operations driven only by the adapter's own hook calls
+        // (which target `domain` directly and never reach this function).
+        let is_hook_path = |configured: &Option<String>| configured.as_deref().is_some_and(|p| p == path);
+        if is_hook_path(&self.snapstart_before_checkpoint_path) || is_hook_path(&self.snapstart_after_restore_path) {
+            tracing::warn!(path = %path, "rejecting external request to SnapStart hook path");
+            return Ok(Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(Empty::<Bytes>::new().map_err(Error::from).boxed())?);
         }
 
         let mut req_headers = parts.headers;
@@ -1446,6 +1461,77 @@ mod tests {
 
         let response = adapter.fetch_response(request).await.expect("Request failed");
         assert_eq!(200, response.status().as_u16());
+    }
+
+    #[tokio::test]
+    async fn test_external_request_to_hook_path_is_forbidden() {
+        // App server should NOT be called for a guarded path.
+        let app_server = MockServer::start();
+        let guarded = app_server.mock(|when, then| {
+            when.path("/snapstart/after");
+            then.status(200).body("should not be called");
+        });
+
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/".to_string(),
+            snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // External request (ALB) targeting the guarded hook path.
+        let alb_req = lambda_http::request::LambdaRequest::Alb({
+            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
+            req.http_method = Method::POST;
+            req.path = Some("/snapstart/after".into());
+            req
+        });
+        let mut request = Request::from(alb_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+
+        let response = adapter
+            .fetch_response(request)
+            .await
+            .expect("guard returns Ok response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // The inner app must not have been contacted.
+        guarded.assert_calls(0);
+    }
+
+    #[tokio::test]
+    async fn test_non_hook_path_is_proxied_normally() {
+        let app_server = MockServer::start();
+        let hello = app_server.mock(|when, then| {
+            when.path("/hello");
+            then.status(200).body("OK");
+        });
+
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/".to_string(),
+            snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        let alb_req = lambda_http::request::LambdaRequest::Alb({
+            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
+            req.http_method = Method::GET;
+            req.path = Some("/hello".into());
+            req
+        });
+        let mut request = Request::from(alb_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+
+        let response = adapter.fetch_response(request).await.expect("Request failed");
+        assert_eq!(response.status(), StatusCode::OK);
+        hello.assert();
     }
 
     #[tokio::test]
