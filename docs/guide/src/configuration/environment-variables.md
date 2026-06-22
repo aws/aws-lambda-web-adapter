@@ -19,6 +19,8 @@ All configuration is done through environment variables, set either in your Dock
 | `AWS_LWA_AUTHORIZATION_SOURCE` | Header name to replace with `Authorization` | None |
 | `AWS_LWA_ERROR_STATUS_CODES` | HTTP status codes that cause Lambda invocation failure (e.g. `500,502-504`) | None |
 | `AWS_LWA_LAMBDA_RUNTIME_API_PROXY` | Proxy URL for Lambda Runtime API requests | None |
+| `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` | Inner-app path the adapter POSTs to before a SnapStart snapshot | None |
+| `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` | Inner-app path the adapter POSTs to after a SnapStart restore | None |
 
 ## Deprecated Variables
 
