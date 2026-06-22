@@ -262,9 +262,8 @@ dependencies = [
 
 [[package]]
 name = "aws_lambda_events"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "087b1b9233c7fc56623d72bb2f0b1fe915b19a0606aa3c09bcd1b902d9803e6c"
+version = "1.2.0"
+source = "git+https://github.com/bnusunny/aws-lambda-rust-runtime.git?branch=feat%2Fsnapstart-resource-trait#f1618f8b8c391c6ebde31b20ac8c9c895375d7c8"
 dependencies = [
  "base64",
  "bytes",
@@ -1245,9 +1244,8 @@ dependencies = [
 
 [[package]]
 name = "lambda_http"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0f0300091919bd7c3d953bd0fb6a7a170d24f333486e4129421c0f6aa1164ac"
+version = "1.2.1"
+source = "git+https://github.com/bnusunny/aws-lambda-rust-runtime.git?branch=feat%2Fsnapstart-resource-trait#f1618f8b8c391c6ebde31b20ac8c9c895375d7c8"
 dependencies = [
  "aws_lambda_events",
  "bytes",
@@ -1270,9 +1268,8 @@ dependencies = [
 
 [[package]]
 name = "lambda_runtime"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23583c918bee8de7bc005ba2ad8ebd84529894bfd9a863cf24226bb6c7787690"
+version = "1.2.1"
+source = "git+https://github.com/bnusunny/aws-lambda-rust-runtime.git?branch=feat%2Fsnapstart-resource-trait#f1618f8b8c391c6ebde31b20ac8c9c895375d7c8"
 dependencies = [
  "async-stream",
  "base64",
@@ -1295,9 +1292,8 @@ dependencies = [
 
 [[package]]
 name = "lambda_runtime_api_client"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4873061514cb57ffb6a599b77c46c65d6d783efe9bad8fd56b7cba7f0459ef"
+version = "1.1.0"
+source = "git+https://github.com/bnusunny/aws-lambda-rust-runtime.git?branch=feat%2Fsnapstart-resource-trait#f1618f8b8c391c6ebde31b20ac8c9c895375d7c8"
 dependencies = [
  "bytes",
  "futures-channel",
