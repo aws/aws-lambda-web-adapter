@@ -90,9 +90,10 @@ unique identifiers). Both hooks are opt-in and independent.
 | `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH`     | After restore, before serving traffic | Reconnect, refresh credentials, reseed randomness, regenerate unique IDs |
 
 Each hook is an empty `POST`; your application must respond with a `2xx` status.
-A non-`2xx` response or a connection failure fails the SnapStart phase
-(initialization for the before-checkpoint hook, restore for the after-restore
-hook) instead of serving traffic against an improperly prepared application.
+A non-`2xx` response, a connection failure, or taking longer than 60 seconds to
+respond fails the SnapStart phase (initialization for the before-checkpoint hook,
+restore for the after-restore hook) instead of serving traffic against an
+improperly prepared application.
 
 After restore, the adapter also automatically refreshes its own HTTP connection
 to your application, so it never reuses a connection captured in the snapshot.

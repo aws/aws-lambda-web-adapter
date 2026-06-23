@@ -18,7 +18,7 @@ When `AWS_LAMBDA_INITIALIZATION_TYPE` is `snap-start`, the adapter participates 
 1. **Before checkpoint** — if `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` is set, the adapter sends an empty `POST` to that path on your application, then signals Lambda that it is ready for the snapshot.
 2. **After restore** — Lambda restores the environment. The adapter first refreshes its own HTTP connection to your application (so it never reuses a connection captured in the snapshot), then, if `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` is set, sends an empty `POST` to that path.
 
-Each hook is an empty `POST`, and your application must respond with a `2xx` status. A non-`2xx` response or a connection failure fails the SnapStart phase — initialization for the before-checkpoint hook, restore for the after-restore hook — rather than serving traffic against an improperly prepared application.
+Each hook is an empty `POST`, and your application must respond with a `2xx` status. A non-`2xx` response, a connection failure, or taking longer than 60 seconds to respond fails the SnapStart phase — initialization for the before-checkpoint hook, restore for the after-restore hook — rather than serving traffic against an improperly prepared application.
 
 ## Why you need the hooks
 
