@@ -5,8 +5,9 @@
 - Add SnapStart support. The adapter notifies your web application at the SnapStart
   boundary via two opt-in HTTP hooks — `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH`
   (before checkpoint) and `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` (after restore) —
-  so it can drain and re-establish connections. The adapter also refreshes its own
-  HTTP client after restore and rejects external traffic to the hook paths with 403.
+  so it can drain and re-establish connections. Each hook call is bounded by a
+  60-second timeout. The adapter also refreshes its own HTTP client after restore
+  and rejects external traffic to the hook paths with 403.
 
 ---
 

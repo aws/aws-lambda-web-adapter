@@ -21,7 +21,7 @@ To get more information of Wrapper script, please read Lambda documentation [her
 - `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` is set to `/snapstart/before`. Before the snapshot is taken, the adapter sends an empty HTTP `POST` to this path. The app uses it to drain and close resources that will not survive the snapshot (in this example, it closes the connection pool).
 - `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` is set to `/snapstart/after`. After the environment is restored and before traffic is served, the adapter sends an empty HTTP `POST` to this path. The app uses it to re-establish connections and regenerate per-environment unique values (in this example, it reconnects the pool and generates a fresh `connection_id`).
 
-Both hook routes must return a `2xx` status code. A non-2xx response or a connection failure fails the SnapStart phase. The adapter also automatically refreshes its own HTTP connection to the inner app after restore, so you do not have to manage the adapter's client.
+Both hook routes must return a `2xx` status code. A non-2xx response, a connection failure, or taking longer than 60 seconds to respond fails the SnapStart phase. The adapter also automatically refreshes its own HTTP connection to the inner app after restore, so you do not have to manage the adapter's client.
 
 These hook routes are protected: the adapter only allows them to be invoked internally during the SnapStart lifecycle. External callers that request `/snapstart/before` or `/snapstart/after` receive a `403 Forbidden`.
 
