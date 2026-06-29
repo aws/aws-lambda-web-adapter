@@ -18,10 +18,13 @@ To get more information of Wrapper script, please read Lambda documentation [her
 
 [Lambda SnapStart](https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html) initializes your function, takes a snapshot of the initialized execution environment, and restores from that snapshot to serve invocations. Some resources do not survive the snapshot (open connections) and some values must not be shared across every restored environment (unique ids, seeds). The Lambda Web Adapter bridges the SnapStart lifecycle to your inner web app through two opt-in environment variables:
 
-- `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` is set to `/snapstart/before`. Before the snapshot is taken, the adapter sends an empty HTTP `POST` to this path. The app uses it to drain and close resources that will not survive the snapshot (in this example, it closes the connection pool).
-- `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` is set to `/snapstart/after`. After the environment is restored and before traffic is served, the adapter sends an empty HTTP `POST` to this path. The app uses it to re-establish connections and regenerate per-environment unique values (in this example, it reconnects the pool and generates a fresh `connection_id`).
+- **Before the snapshot** — `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` is set to `/snapstart/before`. The adapter sends an empty HTTP `POST` to this path. The app uses it to drain and close resources that will not survive the snapshot (in this example, it closes the connection pool).
+- **After restore**, before traffic is served, the adapter performs three steps in order:
+  1. It refreshes its own HTTP connection to the inner app, so it never reuses a connection captured in the snapshot (this is automatic — you do not configure or manage the adapter's client).
+  2. `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` is set to `/snapstart/after`. The adapter sends an empty HTTP `POST` to this path over the refreshed connection. The app uses it to re-establish connections and regenerate per-environment unique values (in this example, it reconnects the pool and generates a fresh `connection_id`).
+  3. It re-runs the readiness check against your app before admitting traffic.
 
-Both hook routes must return a `2xx` status code. A non-2xx response, a connection failure, or taking longer than 60 seconds to respond fails the SnapStart phase. After restore, the adapter also automatically refreshes its own HTTP connection to the inner app (so you do not have to manage the adapter's client) and re-runs the readiness check before admitting traffic; if the app does not report ready within 10 seconds, the restore fails.
+Both hook routes must return a `2xx` status code. A non-2xx response, a connection failure, or taking longer than 60 seconds to respond fails the SnapStart phase. Likewise, if the readiness check does not pass within 10 seconds of restore, the restore fails — so traffic is never served against an app that has not finished recovering.
 
 These hook routes are protected: the adapter only allows them to be invoked internally during the SnapStart lifecycle. External callers that request `/snapstart/before` or `/snapstart/after` receive a `403 Forbidden`.
 
