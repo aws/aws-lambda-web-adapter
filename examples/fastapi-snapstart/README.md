@@ -42,22 +42,26 @@ The two SnapStart hook endpoints are configured as function environment variable
 When the function runs under SnapStart, the adapter calls your application at the
 snapshot boundary:
 
-- `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` is set to `/snapstart/before`. Before the
-  snapshot is taken, the adapter sends an empty HTTP `POST` to this path. The app uses
+- **Before the snapshot** — `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` is set to
+  `/snapstart/before`. The adapter sends an empty HTTP `POST` to this path. The app uses
   it to drain and close resources that will not survive the snapshot (in this example,
   it closes the connection pool).
-- `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` is set to `/snapstart/after`. After the
-  environment is restored and before traffic is served, the adapter sends an empty HTTP
-  `POST` to this path. The app uses it to re-establish connections and regenerate
-  per-environment unique values (in this example, it reconnects the pool and generates
-  a fresh `connection_id`).
+- **After restore**, before traffic is served, the adapter performs three steps in
+  order:
+  1. It refreshes its own HTTP connection to the inner app, so it never reuses a
+     connection captured in the snapshot (this is automatic — you do not configure or
+     manage the adapter's client).
+  2. `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` is set to `/snapstart/after`. The adapter
+     sends an empty HTTP `POST` to this path over the refreshed connection. The app uses
+     it to re-establish connections and regenerate per-environment unique values (in
+     this example, it reconnects the pool and generates a fresh `connection_id`).
+  3. It re-runs the readiness check against your app before admitting traffic.
 
 Both hook routes must return a `2xx` status code. A non-2xx response, a connection
-failure, or taking longer than 60 seconds to respond fails the SnapStart phase. After
-restore, the adapter also automatically refreshes its own HTTP connection to the inner
-app (so you do not have to manage the adapter's client) and re-runs the readiness check
-before admitting traffic; if the app does not report ready within 10 seconds, the
-restore fails.
+failure, or taking longer than 60 seconds to respond fails the SnapStart phase.
+Likewise, if the readiness check does not pass within 10 seconds of restore, the
+restore fails — so traffic is never served against an app that has not finished
+recovering.
 
 These hook routes are protected: the adapter only allows them to be invoked internally
 during the SnapStart lifecycle. External callers that request `/snapstart/before` or
