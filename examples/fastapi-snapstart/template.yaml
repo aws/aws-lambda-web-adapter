@@ -17,6 +17,10 @@ Resources:
       AutoPublishAlias: live
       SnapStart:
         ApplyOn: PublishedVersions
+      Environment:
+        Variables:
+          AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH: /snapstart/before
+          AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH: /snapstart/after
       Events:
         ApiEvent:
           Type: HttpApi
