@@ -13,7 +13,7 @@ Both hooks are opt-in and independent — each fires only when its variable is s
 
 ## How it works
 
-When `AWS_LAMBDA_INITIALIZATION_TYPE` is `snap-start`, the adapter participates in the SnapStart lifecycle:
+The adapter always registers for the SnapStart lifecycle; the Lambda runtime invokes the hooks only when your function runs under SnapStart. When it does, the adapter participates as follows:
 
 1. **Before checkpoint** — if `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` is set, the adapter sends an empty `POST` to that path on your application, then signals Lambda that it is ready for the snapshot.
 2. **After restore** — Lambda restores the environment. The adapter first refreshes its own HTTP connection to your application (so it never reuses a connection captured in the snapshot); then, if `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` is set, sends an empty `POST` to that path; and finally re-runs the readiness check before admitting traffic.
