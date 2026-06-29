@@ -96,7 +96,9 @@ restore for the after-restore hook) instead of serving traffic against an
 improperly prepared application.
 
 After restore, the adapter also automatically refreshes its own HTTP connection
-to your application, so it never reuses a connection captured in the snapshot.
+to your application, so it never reuses a connection captured in the snapshot, and
+then re-runs the readiness check before admitting traffic. If the application does
+not report ready within 10 seconds of restore, the restore fails.
 
 > These hook paths are control-plane operations. External requests (via API
 > Gateway or ALB) that target a configured hook path receive `403 Forbidden` and

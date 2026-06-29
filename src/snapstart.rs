@@ -10,12 +10,18 @@ use lambda_http::{Body, BoxFuture, Error, SnapStartResource};
 use tokio::time::timeout;
 use url::Url;
 
-use crate::build_client;
+use crate::{build_client, readiness, Protocol};
 
 /// Maximum time the adapter waits for an inner-app hook to respond before
 /// failing the SnapStart phase. Bounds a hung or unresponsive hook so the
 /// snapshot/restore lifecycle cannot stall indefinitely.
 const HOOK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Maximum time the adapter waits for the inner app to report ready after
+/// restore (step 3). Tighter than [`HOOK_TIMEOUT`]: once the after-restore hook
+/// has run, the app should become ready almost immediately, so a long stall here
+/// indicates a failed restore rather than legitimate slow work.
+const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A [`SnapStartResource`] that bridges the Lambda SnapStart lifecycle to the
 /// inner web application running behind the adapter.
@@ -29,15 +35,24 @@ pub(crate) struct SnapStartHooks {
     domain: Url,
     before_checkpoint_path: Option<String>,
     after_restore_path: Option<String>,
+    /// Readiness-check endpoint, protocol, and healthy statuses — shared with the
+    /// adapter so the post-restore readiness check (step 3) matches init behavior.
+    healthcheck_url: Url,
+    healthcheck_protocol: Protocol,
+    healthcheck_healthy_status: Vec<u16>,
 }
 
 impl SnapStartHooks {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         restored_client: Arc<OnceLock<Arc<Client<HttpConnector, Body>>>>,
         client: Arc<Client<HttpConnector, Body>>,
         domain: Url,
         before_checkpoint_path: Option<String>,
         after_restore_path: Option<String>,
+        healthcheck_url: Url,
+        healthcheck_protocol: Protocol,
+        healthcheck_healthy_status: Vec<u16>,
     ) -> Self {
         Self {
             restored_client,
@@ -45,6 +60,9 @@ impl SnapStartHooks {
             domain,
             before_checkpoint_path,
             after_restore_path,
+            healthcheck_url,
+            healthcheck_protocol,
+            healthcheck_healthy_status,
         }
     }
 
@@ -104,8 +122,45 @@ impl SnapStartResource for SnapStartHooks {
             if let Some(path) = self.after_restore_path.as_deref() {
                 Self::post_hook(&fresh, &self.domain, path).await?;
             }
+
+            // 3. Confirm the app is serving again before traffic is admitted.
+            self.check_readiness_with_timeout(&fresh, READINESS_TIMEOUT).await?;
+
             Ok(())
         })
+    }
+}
+
+impl SnapStartHooks {
+    /// Step 3 of [`after_restore`](SnapStartResource::after_restore): retry-until-ready
+    /// over `client`, bounded by `readiness_timeout`. A timeout or an unready app is an
+    /// error, which fails the restore (reported to `/restore/error`). Split out with an
+    /// explicit timeout so tests can exercise the failure path without waiting
+    /// [`READINESS_TIMEOUT`].
+    async fn check_readiness_with_timeout(
+        &self,
+        client: &Client<HttpConnector, Body>,
+        readiness_timeout: Duration,
+    ) -> Result<(), Error> {
+        let ready = timeout(
+            readiness_timeout,
+            readiness::wait_until_ready(
+                client,
+                &self.healthcheck_url,
+                self.healthcheck_protocol,
+                &self.healthcheck_healthy_status,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            Error::from(format!(
+                "SnapStart after-restore readiness check timed out after {readiness_timeout:?}"
+            ))
+        })?;
+        if !ready {
+            return Err(Error::from("SnapStart after-restore readiness check failed"));
+        }
+        Ok(())
     }
 }
 
@@ -114,15 +169,38 @@ mod tests {
     use super::*;
     use httpmock::MockServer;
 
-    fn hooks(server: &MockServer, before: Option<&str>, after: Option<&str>) -> SnapStartHooks {
+    /// Builds hooks pointed at `server`, with the readiness check targeting
+    /// `health_path` on the same server.
+    fn hooks_with_health(
+        server: &MockServer,
+        before: Option<&str>,
+        after: Option<&str>,
+        health_path: &str,
+    ) -> SnapStartHooks {
         let domain: Url = format!("http://{}:{}", server.host(), server.port()).parse().unwrap();
+        let healthcheck_url: Url = format!("http://{}:{}{}", server.host(), server.port(), health_path)
+            .parse()
+            .unwrap();
         SnapStartHooks::new(
             Arc::new(OnceLock::new()),
             Arc::new(build_client()),
             domain,
             before.map(str::to_string),
             after.map(str::to_string),
+            healthcheck_url,
+            Protocol::Http,
+            (100..500).collect(),
         )
+    }
+
+    /// Builds hooks with a readiness check that always passes (a mocked `/health`
+    /// returning 200), for tests focused on the before/after hook behavior.
+    fn hooks(server: &MockServer, before: Option<&str>, after: Option<&str>) -> SnapStartHooks {
+        server.mock(|when, then| {
+            when.path("/health");
+            then.status(200);
+        });
+        hooks_with_health(server, before, after, "/health")
     }
 
     #[tokio::test]
@@ -209,5 +287,38 @@ mod tests {
         let h = hooks(&server, None, None);
         assert!(h.after_restore().await.is_ok());
         assert!(h.restored_client.get().is_some());
+    }
+
+    #[tokio::test]
+    async fn after_restore_readiness_check_runs_over_fresh_client() {
+        // No after-restore POST configured: step 3 must still run and pass.
+        let server = MockServer::start();
+        let health = server.mock(|when, then| {
+            when.path("/ready");
+            then.status(200);
+        });
+        let h = hooks_with_health(&server, None, None, "/ready");
+        assert!(h.after_restore().await.is_ok());
+        health.assert();
+    }
+
+    #[tokio::test]
+    async fn check_readiness_times_out_when_app_never_ready() {
+        // Health endpoint always reports unhealthy; the bounded readiness check
+        // should give up and fail rather than retry forever.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.path("/never");
+            then.status(503);
+        });
+        let h = hooks_with_health(&server, None, None, "/never");
+        let client = build_client();
+
+        let result = h
+            .check_readiness_with_timeout(&client, Duration::from_millis(100))
+            .await;
+
+        let err = result.expect_err("unready app should fail the readiness check");
+        assert!(err.to_string().contains("timed out"), "unexpected error: {err}");
     }
 }
