@@ -116,7 +116,6 @@ pub use lambda_http::tracing;
 use lambda_http::Body;
 pub use lambda_http::Error;
 use lambda_http::{Request, RequestExt, Response};
-use readiness::Checkpoint;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::{
@@ -129,8 +128,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{net::TcpStream, time::timeout};
-use tokio_retry::{strategy::FixedInterval, Retry};
+use tokio::time::timeout;
 use tower::{Service, ServiceBuilder};
 use tower_http::compression::CompressionLayer;
 use url::Url;
@@ -798,59 +796,18 @@ impl Adapter<HttpConnector, Body> {
     /// Uses a fixed 10ms interval between retry attempts and logs progress
     /// at increasing intervals (100ms, 500ms, 1s, 2s, 5s, 10s).
     async fn is_web_ready(&self, url: &Url, protocol: &Protocol) -> bool {
-        let mut checkpoint = Checkpoint::new();
-        Retry::spawn(FixedInterval::from_millis(10), || {
-            if checkpoint.lapsed() {
-                tracing::info!(url = %url.to_string(), "app is not ready after {}ms", checkpoint.next_ms());
-                checkpoint.increment();
-            }
-            self.check_web_readiness(url, protocol)
-        })
-        .await
-        .is_ok()
+        readiness::wait_until_ready(self.client(), url, *protocol, &self.healthcheck_healthy_status).await
     }
 
     /// Performs a single readiness check using the configured protocol.
     ///
     /// For HTTP: Makes a GET request and checks if the status code is in the healthy range.
     /// For TCP: Attempts to establish a TCP connection.
+    ///
+    /// Used by tests; `Adapter`'s own readiness path goes through [`is_web_ready`](Self::is_web_ready).
+    #[cfg(test)]
     async fn check_web_readiness(&self, url: &Url, protocol: &Protocol) -> Result<(), i8> {
-        match protocol {
-            Protocol::Http => {
-                // url is already validated in Adapter::new(), this conversion should always succeed
-                // If it fails, it indicates a programming error, not a runtime condition
-                let uri: http::Uri = url
-                    .as_str()
-                    .parse()
-                    .expect("BUG: healthcheck_url should be valid - validated in Adapter::new()");
-
-                match self.client().get(uri).await {
-                    Ok(response) if self.healthcheck_healthy_status.contains(&response.status().as_u16()) => {
-                        tracing::debug!("app is ready");
-                        Ok(())
-                    }
-                    _ => {
-                        tracing::trace!("app is not ready");
-                        Err(-1)
-                    }
-                }
-            }
-            Protocol::Tcp => {
-                // url is already validated in Adapter::new(), host and port should exist
-                // If they don't, it indicates a programming error, not a runtime condition
-                let host = url
-                    .host_str()
-                    .expect("BUG: healthcheck_url should have host - validated in Adapter::new()");
-                let port = url
-                    .port()
-                    .expect("BUG: healthcheck_url should have port - validated in Adapter::new()");
-
-                match TcpStream::connect(format!("{}:{}", host, port)).await {
-                    Ok(_) => Ok(()),
-                    Err(_) => Err(-1),
-                }
-            }
-        }
+        readiness::check_web_readiness(self.client(), url, *protocol, &self.healthcheck_healthy_status).await
     }
 
     /// Starts the adapter and begins processing Lambda events.
@@ -886,6 +843,9 @@ impl Adapter<HttpConnector, Body> {
             self.domain.clone(),
             self.snapstart_before_checkpoint_path.clone(),
             self.snapstart_after_restore_path.clone(),
+            self.healthcheck_url.clone(),
+            self.healthcheck_protocol,
+            self.healthcheck_healthy_status.clone(),
         ));
         match (self.compression, self.invoke_mode) {
             (true, LambdaInvokeMode::Buffered) => {
