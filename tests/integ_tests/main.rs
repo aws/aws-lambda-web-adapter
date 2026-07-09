@@ -13,7 +13,6 @@ use httpmock::{
     Method::{DELETE, GET, POST, PUT},
     MockServer,
 };
-use hyper::body::Incoming;
 use lambda_http::Body;
 use lambda_http::Context;
 use lambda_web_adapter::{Adapter, AdapterOptions, LambdaInvokeMode, Protocol};
@@ -25,7 +24,7 @@ use flate2::Compression;
 use http_body_util::BodyExt;
 use lambda_http::lambda_runtime::Config;
 use serde_json::json;
-use tower_http::compression::{CompressionBody, CompressionLayer};
+use tower_http::compression::CompressionLayer;
 
 #[test]
 fn test_adapter_options_from_env() {
@@ -1162,12 +1161,20 @@ async fn test_http_tcp_readiness_check() {
     assert_eq!("TCP Ready", body_to_string(response).await);
 }
 
-async fn body_to_string(res: Response<Incoming>) -> String {
+async fn body_to_string<B>(res: Response<B>) -> String
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Debug,
+{
     let body_bytes = res.collect().await.unwrap().to_bytes();
     String::from_utf8_lossy(&body_bytes).to_string()
 }
 
-async fn compressed_body_to_string(res: Response<CompressionBody<Incoming>>) -> String {
+async fn compressed_body_to_string<B>(res: Response<B>) -> String
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Debug,
+{
     let body_bytes = res.collect().await.unwrap().to_bytes();
     decode_reader(&body_bytes).unwrap()
 }

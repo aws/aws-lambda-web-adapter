@@ -1696,11 +1696,7 @@ mod tests {
         // Publish a fresh client.
         let fresh = Arc::new(build_client());
         let fresh_ptr = Arc::as_ptr(&fresh) as *const ();
-        adapter
-            .restored_client
-            .set(fresh)
-            .ok()
-            .expect("set should succeed once");
+        assert!(adapter.restored_client.set(fresh).is_ok(), "set should succeed once");
 
         // After restore: client() returns the restored client (different pointer).
         let now_ptr = Arc::as_ptr(adapter.client()) as *const ();
