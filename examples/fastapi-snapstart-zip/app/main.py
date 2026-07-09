@@ -57,5 +57,9 @@ async def after_restore():
 
     Re-establish connections and regenerate per-environment unique values.
     """
+    # Reseed from OS entropy first. Python's random module keeps its state in
+    # process memory, which is captured in the snapshot — without reseeding,
+    # every restored environment would draw the same "unique" value.
+    random.seed()
     pool.connect()
     return Response(status_code=200)
