@@ -63,7 +63,6 @@
 //! with `InvokeMode: RESPONSE_STREAM`.
 
 mod readiness;
-mod snapstart;
 
 // Environment variable names (AWS_LWA_ prefix)
 const ENV_PORT: &str = "AWS_LWA_PORT";
@@ -79,8 +78,6 @@ const ENV_ENABLE_COMPRESSION: &str = "AWS_LWA_ENABLE_COMPRESSION";
 const ENV_INVOKE_MODE: &str = "AWS_LWA_INVOKE_MODE";
 const ENV_AUTHORIZATION_SOURCE: &str = "AWS_LWA_AUTHORIZATION_SOURCE";
 const ENV_ERROR_STATUS_CODES: &str = "AWS_LWA_ERROR_STATUS_CODES";
-const ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH: &str = "AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH";
-const ENV_SNAPSTART_AFTER_RESTORE_PATH: &str = "AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH";
 const ENV_LAMBDA_RUNTIME_API_PROXY: &str = "AWS_LWA_LAMBDA_RUNTIME_API_PROXY";
 
 // Deprecated environment variable names (without prefix)
@@ -102,13 +99,13 @@ const ENV_LAMBDA_RUNTIME_API: &str = "AWS_LAMBDA_RUNTIME_API";
 // (Some(None)).
 static ORIGINAL_LAMBDA_RUNTIME_API: OnceLock<Option<String>> = OnceLock::new();
 
-use bytes::Bytes;
 use http::{
     header::{HeaderName, HeaderValue},
     Method, StatusCode,
 };
 use http_body::Body as HttpBody;
-use http_body_util::{combinators::BoxBody, BodyExt, Empty};
+use http_body_util::BodyExt;
+use hyper::body::Incoming;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use lambda_http::request::RequestContext;
@@ -116,6 +113,7 @@ pub use lambda_http::tracing;
 use lambda_http::Body;
 pub use lambda_http::Error;
 use lambda_http::{Request, RequestExt, Response};
+use readiness::Checkpoint;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::{
@@ -128,7 +126,8 @@ use std::{
     },
     time::Duration,
 };
-use tokio::time::timeout;
+use tokio::{net::TcpStream, time::timeout};
+use tokio_retry::{strategy::FixedInterval, Retry};
 use tower::{Service, ServiceBuilder};
 use tower_http::compression::CompressionLayer;
 use url::Url;
@@ -350,16 +349,6 @@ pub struct AdapterOptions {
     /// the adapter will return an error to Lambda instead of the response.
     /// This can be useful for triggering Lambda retry behavior.
     pub error_status_codes: Option<Vec<u16>>,
-
-    /// Inner-app path POSTed before the SnapStart snapshot is taken.
-    /// When set, the adapter notifies the app so it can drain resources.
-    /// Default: `None` (phase skipped).
-    pub snapstart_before_checkpoint_path: Option<String>,
-
-    /// Inner-app path POSTed after the SnapStart restore completes.
-    /// When set, the adapter notifies the app so it can reconnect / reseed.
-    /// Default: `None` (phase skipped).
-    pub snapstart_after_restore_path: Option<String>,
 }
 
 /// Helper to get env var with deprecation warning for old name
@@ -446,8 +435,6 @@ impl Default for AdapterOptions {
             error_status_codes: env::var(ENV_ERROR_STATUS_CODES)
                 .ok()
                 .map(|codes| parse_status_codes(&codes)),
-            snapstart_before_checkpoint_path: env::var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH).ok(),
-            snapstart_after_restore_path: env::var(ENV_SNAPSTART_AFTER_RESTORE_PATH).ok(),
         }
     }
 }
@@ -550,7 +537,6 @@ fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
 #[derive(Clone)]
 pub struct Adapter<C, B> {
     client: Arc<Client<C, B>>,
-    restored_client: Arc<OnceLock<Arc<Client<C, B>>>>,
     healthcheck_url: Url,
     healthcheck_protocol: Protocol,
     healthcheck_healthy_status: Vec<u16>,
@@ -563,25 +549,18 @@ pub struct Adapter<C, B> {
     invoke_mode: LambdaInvokeMode,
     authorization_source: Option<String>,
     error_status_codes: Option<Vec<u16>>,
-    snapstart_before_checkpoint_path: Option<String>,
-    snapstart_after_restore_path: Option<String>,
-}
-
-/// Builds the hyper client used to talk to the inner web application.
-///
-/// Shared by [`Adapter::new`] and the SnapStart after-restore hook so the
-/// post-restore client is built identically to the original.
-fn build_client() -> Client<HttpConnector, Body> {
-    let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
-    builder.pool_idle_timeout(Duration::from_secs(4));
-    builder.build(HttpConnector::new())
 }
 
 impl Adapter<HttpConnector, Body> {
     /// Creates a new HTTP Adapter instance.
     ///
     /// This function initializes a new HTTP client configured to communicate with
-    /// your web application, using a 4-second idle timeout for connection pooling.
+    /// your web application. When Lambda SnapStart is detected
+    /// (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`), connection pooling is
+    /// disabled to prevent stale connections after restore, where
+    /// `CLOCK_MONOTONIC` inconsistencies can cause hyper's pool to reuse dead
+    /// connections. Otherwise, a 4-second idle timeout is used for connection
+    /// pooling.
     ///
     /// # Arguments
     ///
@@ -606,7 +585,19 @@ impl Adapter<HttpConnector, Body> {
     /// let adapter = Adapter::new(&options).expect("Failed to create adapter");
     /// ```
     pub fn new(options: &AdapterOptions) -> Result<Adapter<HttpConnector, Body>, Error> {
-        let client = build_client();
+        let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
+
+        // When running under SnapStart, CLOCK_MONOTONIC can be inconsistent after
+        // restore, causing hyper's pool to reuse dead connections (hyper#3810,
+        // rust-lang/rust#79462). Disable pooling in that case. For localhost
+        // communication the overhead of new TCP connections is negligible.
+        if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
+            builder.pool_max_idle_per_host(0);
+        } else {
+            builder.pool_idle_timeout(Duration::from_secs(4));
+        }
+
+        let client = builder.build(HttpConnector::new());
 
         let schema = "http";
 
@@ -650,7 +641,6 @@ impl Adapter<HttpConnector, Body> {
 
         Ok(Adapter {
             client: Arc::new(client),
-            restored_client: Arc::new(OnceLock::new()),
             healthcheck_url,
             healthcheck_protocol: options.readiness_check_protocol,
             healthcheck_healthy_status: options.readiness_check_healthy_status.clone(),
@@ -663,15 +653,7 @@ impl Adapter<HttpConnector, Body> {
             invoke_mode: options.invoke_mode,
             authorization_source: options.authorization_source.clone(),
             error_status_codes: options.error_status_codes.clone(),
-            snapstart_before_checkpoint_path: options.snapstart_before_checkpoint_path.clone(),
-            snapstart_after_restore_path: options.snapstart_after_restore_path.clone(),
         })
-    }
-
-    /// Returns the active inner-app HTTP client: the restored client if a
-    /// SnapStart restore has published one, otherwise the base client.
-    fn client(&self) -> &Arc<Client<HttpConnector, Body>> {
-        self.restored_client.get().unwrap_or(&self.client)
     }
 }
 
@@ -796,18 +778,59 @@ impl Adapter<HttpConnector, Body> {
     /// Uses a fixed 10ms interval between retry attempts and logs progress
     /// at increasing intervals (100ms, 500ms, 1s, 2s, 5s, 10s).
     async fn is_web_ready(&self, url: &Url, protocol: &Protocol) -> bool {
-        readiness::wait_until_ready(self.client(), url, *protocol, &self.healthcheck_healthy_status).await
+        let mut checkpoint = Checkpoint::new();
+        Retry::spawn(FixedInterval::from_millis(10), || {
+            if checkpoint.lapsed() {
+                tracing::info!(url = %url.to_string(), "app is not ready after {}ms", checkpoint.next_ms());
+                checkpoint.increment();
+            }
+            self.check_web_readiness(url, protocol)
+        })
+        .await
+        .is_ok()
     }
 
     /// Performs a single readiness check using the configured protocol.
     ///
     /// For HTTP: Makes a GET request and checks if the status code is in the healthy range.
     /// For TCP: Attempts to establish a TCP connection.
-    ///
-    /// Used by tests; `Adapter`'s own readiness path goes through [`is_web_ready`](Self::is_web_ready).
-    #[cfg(test)]
     async fn check_web_readiness(&self, url: &Url, protocol: &Protocol) -> Result<(), i8> {
-        readiness::check_web_readiness(self.client(), url, *protocol, &self.healthcheck_healthy_status).await
+        match protocol {
+            Protocol::Http => {
+                // url is already validated in Adapter::new(), this conversion should always succeed
+                // If it fails, it indicates a programming error, not a runtime condition
+                let uri: http::Uri = url
+                    .as_str()
+                    .parse()
+                    .expect("BUG: healthcheck_url should be valid - validated in Adapter::new()");
+
+                match self.client.get(uri).await {
+                    Ok(response) if self.healthcheck_healthy_status.contains(&response.status().as_u16()) => {
+                        tracing::debug!("app is ready");
+                        Ok(())
+                    }
+                    _ => {
+                        tracing::trace!("app is not ready");
+                        Err(-1)
+                    }
+                }
+            }
+            Protocol::Tcp => {
+                // url is already validated in Adapter::new(), host and port should exist
+                // If they don't, it indicates a programming error, not a runtime condition
+                let host = url
+                    .host_str()
+                    .expect("BUG: healthcheck_url should have host - validated in Adapter::new()");
+                let port = url
+                    .port()
+                    .expect("BUG: healthcheck_url should have port - validated in Adapter::new()");
+
+                match TcpStream::connect(format!("{}:{}", host, port)).await {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(-1),
+                }
+            }
+        }
     }
 
     /// Starts the adapter and begins processing Lambda events.
@@ -837,46 +860,14 @@ impl Adapter<HttpConnector, Body> {
     /// # }
     /// ```
     pub async fn run(self) -> Result<(), Error> {
-        let hooks = Arc::new(snapstart::SnapStartHooks::new(
-            self.restored_client.clone(),
-            self.client.clone(),
-            self.domain.clone(),
-            self.snapstart_before_checkpoint_path.clone(),
-            self.snapstart_after_restore_path.clone(),
-            self.healthcheck_url.clone(),
-            self.healthcheck_protocol,
-            self.healthcheck_healthy_status.clone(),
-        ));
         match (self.compression, self.invoke_mode) {
             (true, LambdaInvokeMode::Buffered) => {
                 let svc = ServiceBuilder::new().layer(CompressionLayer::new()).service(self);
-                Self::register_and_run(lambda_http::runtime_concurrent(svc), hooks).await
+                lambda_http::run_concurrent(svc).await
             }
-            (_, LambdaInvokeMode::Buffered) => {
-                Self::register_and_run(lambda_http::runtime_concurrent(self), hooks).await
-            }
-            (_, LambdaInvokeMode::ResponseStream) => {
-                Self::register_and_run(lambda_http::streaming_runtime_concurrent(self), hooks).await
-            }
+            (_, LambdaInvokeMode::Buffered) => lambda_http::run_concurrent(self).await,
+            (_, LambdaInvokeMode::ResponseStream) => lambda_http::run_with_streaming_response_concurrent(self).await,
         }
-    }
-
-    /// Registers the SnapStart hooks on `runtime` and starts the concurrent event loop.
-    ///
-    /// Each `run()` arm builds a different runtime type (buffered vs. streaming),
-    /// so the shared "register, then run" tail lives here as a generic helper.
-    async fn register_and_run<S>(
-        runtime: lambda_http::lambda_runtime::Runtime<S>,
-        hooks: Arc<snapstart::SnapStartHooks>,
-    ) -> Result<(), Error>
-    where
-        S: lambda_http::Service<lambda_http::lambda_runtime::LambdaInvocation, Response = (), Error = Error>
-            + Clone
-            + Send
-            + 'static,
-        S::Future: Send,
-    {
-        runtime.register_snapstart_resource(hooks).run_concurrent().await
     }
 
     /// Applies runtime API proxy configuration from environment variables.
@@ -939,7 +930,7 @@ impl Adapter<HttpConnector, Body> {
     /// 4. Strips the base path if configured
     /// 5. Forwards the request to the web application
     /// 6. Returns the response (or error if status code is in error_status_codes)
-    async fn fetch_response(&self, event: Request) -> Result<Response<BoxBody<Bytes, Error>>, Error> {
+    async fn fetch_response(&self, event: Request) -> Result<Response<Incoming>, Error> {
         if self.async_init && !self.ready_at_init.load(Ordering::SeqCst) {
             self.is_web_ready(&self.healthcheck_url, &self.healthcheck_protocol)
                 .await;
@@ -963,17 +954,6 @@ impl Adapter<HttpConnector, Body> {
 
         if matches!(request_context, RequestContext::PassThrough) && parts.method == Method::POST {
             path = self.pass_through_path.as_str();
-        }
-
-        // Block external traffic to the SnapStart hook paths. These routes are
-        // control-plane operations driven only by the adapter's own hook calls
-        // (which target `domain` directly and never reach this function).
-        let is_hook_path = |configured: &Option<String>| configured.as_deref().is_some_and(|p| p == path);
-        if is_hook_path(&self.snapstart_before_checkpoint_path) || is_hook_path(&self.snapstart_after_restore_path) {
-            tracing::warn!(path = %path, "rejecting external request to SnapStart hook path");
-            return Ok(Response::builder()
-                .status(StatusCode::FORBIDDEN)
-                .body(Empty::<Bytes>::new().map_err(Error::from).boxed())?);
         }
 
         let mut req_headers = parts.headers;
@@ -1029,7 +1009,7 @@ impl Adapter<HttpConnector, Body> {
         };
         let request = builder.body(Body::Binary(body_bytes))?;
 
-        let mut app_response = self.client().request(request).await?;
+        let mut app_response = self.client.request(request).await?;
 
         // Check if status code should trigger an error
         if let Some(error_codes) = &self.error_status_codes {
@@ -1056,9 +1036,7 @@ impl Adapter<HttpConnector, Body> {
         tracing::debug!(status = %app_response.status(), body_size = ?app_response.body().size_hint().lower(),
             app_headers = ?app_response.headers().clone(), "responding to lambda event");
 
-        // Box the body into a uniform type so synthetic responses (e.g. the 403
-        // hook-path guard) can share the return type with proxied responses.
-        Ok(app_response.map(|body| body.map_err(Error::from).boxed()))
+        Ok(app_response)
     }
 }
 
@@ -1067,7 +1045,7 @@ impl Adapter<HttpConnector, Body> {
 /// This allows the adapter to be used directly with the Lambda runtime,
 /// which expects a `Service` that can handle Lambda events.
 impl Service<Request> for Adapter<HttpConnector, Body> {
-    type Response = Response<BoxBody<Bytes, Error>>;
+    type Response = Response<Incoming>;
     type Error = Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -1098,35 +1076,6 @@ mod tests {
         assert_eq!(parse_status_codes("invalid"), Vec::<u16>::new());
         assert_eq!(parse_status_codes("500-invalid"), Vec::<u16>::new());
         assert_eq!(parse_status_codes(""), Vec::<u16>::new());
-    }
-
-    // Both cases live in one test because they mutate the same process-global env
-    // vars; splitting them lets Rust's parallel test runner interleave the
-    // set/remove calls and clobber each other's state.
-    #[test]
-    fn test_snapstart_paths() {
-        // Default case: unset env vars -> both None.
-        std::env::remove_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH);
-        std::env::remove_var(ENV_SNAPSTART_AFTER_RESTORE_PATH);
-        let options = AdapterOptions::default();
-        assert_eq!(options.snapstart_before_checkpoint_path, None);
-        assert_eq!(options.snapstart_after_restore_path, None);
-
-        // Set case: env vars present -> parsed into Some(..).
-        std::env::set_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH, "/snapstart/before");
-        std::env::set_var(ENV_SNAPSTART_AFTER_RESTORE_PATH, "/snapstart/after");
-        let options = AdapterOptions::default();
-        assert_eq!(
-            options.snapstart_before_checkpoint_path.as_deref(),
-            Some("/snapstart/before")
-        );
-        assert_eq!(
-            options.snapstart_after_restore_path.as_deref(),
-            Some("/snapstart/after")
-        );
-
-        std::env::remove_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH);
-        std::env::remove_var(ENV_SNAPSTART_AFTER_RESTORE_PATH);
     }
 
     #[tokio::test]
@@ -1454,77 +1403,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_external_request_to_hook_path_is_forbidden() {
-        // App server should NOT be called for a guarded path.
-        let app_server = MockServer::start();
-        let guarded = app_server.mock(|when, then| {
-            when.path("/snapstart/after");
-            then.status(200).body("should not be called");
-        });
-
-        let options = AdapterOptions {
-            host: app_server.host(),
-            port: app_server.port().to_string(),
-            readiness_check_port: app_server.port().to_string(),
-            readiness_check_path: "/".to_string(),
-            snapstart_after_restore_path: Some("/snapstart/after".to_string()),
-            ..Default::default()
-        };
-        let adapter = Adapter::new(&options).expect("Failed to create adapter");
-
-        // External request (ALB) targeting the guarded hook path.
-        let alb_req = lambda_http::request::LambdaRequest::Alb({
-            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
-            req.http_method = Method::POST;
-            req.path = Some("/snapstart/after".into());
-            req
-        });
-        let mut request = Request::from(alb_req);
-        request.extensions_mut().insert(make_lambda_context(None));
-
-        let response = adapter
-            .fetch_response(request)
-            .await
-            .expect("guard returns Ok response");
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-
-        // The inner app must not have been contacted.
-        guarded.assert_calls(0);
-    }
-
-    #[tokio::test]
-    async fn test_non_hook_path_is_proxied_normally() {
-        let app_server = MockServer::start();
-        let hello = app_server.mock(|when, then| {
-            when.path("/hello");
-            then.status(200).body("OK");
-        });
-
-        let options = AdapterOptions {
-            host: app_server.host(),
-            port: app_server.port().to_string(),
-            readiness_check_port: app_server.port().to_string(),
-            readiness_check_path: "/".to_string(),
-            snapstart_after_restore_path: Some("/snapstart/after".to_string()),
-            ..Default::default()
-        };
-        let adapter = Adapter::new(&options).expect("Failed to create adapter");
-
-        let alb_req = lambda_http::request::LambdaRequest::Alb({
-            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
-            req.http_method = Method::GET;
-            req.path = Some("/hello".into());
-            req
-        });
-        let mut request = Request::from(alb_req);
-        request.extensions_mut().insert(make_lambda_context(None));
-
-        let response = adapter.fetch_response(request).await.expect("Request failed");
-        assert_eq!(response.status(), StatusCode::OK);
-        hello.assert();
-    }
-
-    #[tokio::test]
     async fn test_tenant_id_header_absent_when_no_tenant() {
         let app_server = MockServer::start();
         app_server.mock(|when, then| {
@@ -1678,29 +1556,5 @@ mod tests {
             .await
             .expect("Request failed despite control bytes in request context path");
         assert_eq!(200, response.status().as_u16());
-    }
-
-    #[tokio::test]
-    async fn test_client_helper_returns_restored_when_set() {
-        let options = AdapterOptions {
-            host: "127.0.0.1".to_string(),
-            port: "8080".to_string(),
-            readiness_check_port: "8080".to_string(),
-            ..Default::default()
-        };
-        let adapter = Adapter::new(&options).expect("Failed to create adapter");
-
-        // Before restore: client() returns the base client.
-        let base_ptr = Arc::as_ptr(adapter.client()) as *const ();
-
-        // Publish a fresh client.
-        let fresh = Arc::new(build_client());
-        let fresh_ptr = Arc::as_ptr(&fresh) as *const ();
-        assert!(adapter.restored_client.set(fresh).is_ok(), "set should succeed once");
-
-        // After restore: client() returns the restored client (different pointer).
-        let now_ptr = Arc::as_ptr(adapter.client()) as *const ();
-        assert_ne!(now_ptr, base_ptr);
-        assert_eq!(now_ptr, fresh_ptr);
     }
 }
