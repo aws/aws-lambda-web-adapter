@@ -23,7 +23,6 @@
 - [Non-HTTP Event Triggers](./features/non-http-events.md)
 - [Multi-Tenancy](./features/multi-tenancy.md)
 - [Lambda Managed Instances](./features/managed-instances.md)
-- [SnapStart](./features/snapstart.md)
 - [Graceful Shutdown](./features/graceful-shutdown.md)
 - [Base Path Removal](./features/base-path-removal.md)
 - [Authorization Header](./features/authorization-header.md)

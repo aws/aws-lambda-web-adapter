@@ -23,4 +23,4 @@ When the deployment completes, take note of URL's Value. It is the API Gateway e
 
 ### Verify it works
 
-Open URL's URL in a browser, you should see `phpinfo()` on the page. 
+Open URL's URL in a browser, you should see `Hello, World!` on the page. 
