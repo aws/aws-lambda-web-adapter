@@ -1,2 +1,2 @@
-ddtrace==3.5.1
+ddtrace==4.8.2
 flask==3.1.0
