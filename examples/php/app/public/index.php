@@ -2,4 +2,6 @@
 
 require __DIR__ . '/../vendor/autoload.php';
 
-phpinfo();
+header('Content-Type: text/plain');
+
+echo "Hello, World!";
