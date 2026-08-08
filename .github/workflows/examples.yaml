@@ -190,6 +190,7 @@ jobs:
           - { name: fasthtml-zip, path: /, expect_body: "Hello World", port: "8000" }
           - { name: flask-zip, path: /, expect_body: "message", port: "8000" }
           - { name: gin-zip, path: /, expect_body: "message", port: "8000" }
+          - { name: go-http-zip, path: /, expect_body: "Hello, Website!", port: "3000" }
           - { name: remix-zip, path: /, expect_body: "Welcome to", port: "8000" }
           - { name: springboot-zip, path: /v1/, expect_body: "Hello, world!", port: "8000" }
     steps:
