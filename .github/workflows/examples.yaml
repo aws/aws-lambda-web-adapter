@@ -34,6 +34,20 @@ jobs:
           use-installer: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The loop below matches template.yaml exactly, so an example that uses
+      # the template.yml spelling is skipped silently and this job still passes
+      # green -- which is how go-http-zip stayed unvalidated. Reject the other
+      # spelling up front so the gap surfaces as a failure, not as missing
+      # coverage.
+      - name: Enforce template.yaml naming
+        run: |
+          stragglers=$(find examples -name "template.yml")
+          if [ -n "$stragglers" ]; then
+            echo "These examples must be renamed to template.yaml:"
+            echo "$stragglers"
+            exit 1
+          fi
+
       - name: Validate all SAM templates
         run: |
           failed=0
@@ -190,6 +204,7 @@ jobs:
           - { name: fasthtml-zip, path: /, expect_body: "Hello World", port: "8000" }
           - { name: flask-zip, path: /, expect_body: "message", port: "8000" }
           - { name: gin-zip, path: /, expect_body: "message", port: "8000" }
+          - { name: go-http-zip, path: /, expect_body: "Hello, Website!", port: "3000" }
           - { name: remix-zip, path: /, expect_body: "Welcome to", port: "8000" }
           - { name: springboot-zip, path: /v1/, expect_body: "Hello, world!", port: "8000" }
     steps:
