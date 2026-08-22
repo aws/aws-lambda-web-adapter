@@ -694,6 +694,49 @@ async fn test_non_http_event_routes_to_configured_pass_through_path() {
     assert_eq!("pass-through", body_to_string(response).await);
 }
 
+#[test]
+fn test_http_event_request_context_classification() {
+    let alb_event = json!({
+        "httpMethod": "GET",
+        "path": "/health",
+        "headers": {"host": "example.com"},
+        "requestContext": {
+            "elb": {
+                "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/example/abcdef"
+            }
+        },
+        "isBase64Encoded": false
+    })
+    .to_string();
+    let alb_request = lambda_http::request::from_str(&alb_event).expect("Failed to deserialize ALB event");
+    assert!(matches!(alb_request.request_context(), RequestContext::Alb(_)));
+
+    let api_gateway_v2_event = json!({
+        "version": "2.0",
+        "routeKey": "$default",
+        "rawPath": "/health",
+        "requestContext": {
+            "requestId": "abcdef",
+            "stage": "$default",
+            "http": {
+                "method": "GET",
+                "path": "/health",
+                "protocol": "HTTP/1.1",
+                "sourceIp": "127.0.0.1",
+                "userAgent": "curl/8.0.0"
+            }
+        },
+        "isBase64Encoded": false
+    })
+    .to_string();
+    let api_gateway_v2_request =
+        lambda_http::request::from_str(&api_gateway_v2_event).expect("Failed to deserialize API Gateway V2 event");
+    assert!(matches!(
+        api_gateway_v2_request.request_context(),
+        RequestContext::ApiGatewayV2(_)
+    ));
+}
+
 #[tokio::test]
 async fn test_vpc_lattice_v2_event_routes_with_path_query_and_context() {
     let app_server = MockServer::start();
