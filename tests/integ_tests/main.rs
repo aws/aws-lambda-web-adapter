@@ -696,6 +696,27 @@ async fn test_non_http_event_routes_to_configured_pass_through_path() {
 
 #[test]
 fn test_http_event_request_context_classification() {
+    let sqs_event = include_str!("../../examples/sqs-expressjs/events/sqs.json");
+    let sqs_request = lambda_http::request::from_str(sqs_event).expect("Failed to deserialize SQS event");
+    assert!(matches!(sqs_request.request_context(), RequestContext::PassThrough));
+
+    let api_gateway_v1_event = json!({
+        "httpMethod": "GET",
+        "path": "/health",
+        "requestContext": {
+            "requestId": "abcdef",
+            "stage": "prod",
+            "httpMethod": "GET"
+        }
+    })
+    .to_string();
+    let api_gateway_v1_request =
+        lambda_http::request::from_str(&api_gateway_v1_event).expect("Failed to deserialize API Gateway V1 event");
+    assert!(matches!(
+        api_gateway_v1_request.request_context(),
+        RequestContext::ApiGatewayV1(_)
+    ));
+
     let alb_event = json!({
         "httpMethod": "GET",
         "path": "/health",
