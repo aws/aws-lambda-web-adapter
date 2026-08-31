@@ -96,7 +96,6 @@ The readiness check port/path and traffic port can be configured using environme
 - [SpringBoot in Zip](examples/springboot-zip)
 - [SpringBoot Response Streaming](examples/springboot-response-streaming-zip)
 - [Nginx](examples/nginx)
-- [PHP](examples/php)
 - [Rust Actix Web in Zip](examples/rust-actix-web-zip)
 - [Rust Axum in Zip](examples/rust-axum-zip)
 - [Golang Gin](examples/gin)

@@ -76,8 +76,6 @@ The repository includes working examples for many popular web frameworks, packag
 |---------|-----------|-----------|
 | [Nginx](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/nginx) | Docker | No |
 | [Nginx in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/nginx-zip) | Zip | No |
-| [PHP](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/php) | Docker | No |
-| [PHP in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/php-zip) | Zip | No |
 | [Deno Oak in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/deno-zip) | Zip | No |
 | [Ruby Sinatra](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/sinatra) | Docker | No |
 
