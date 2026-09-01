@@ -14,8 +14,8 @@ use httpmock::{
     MockServer,
 };
 use hyper::body::Incoming;
-use lambda_http::Body;
-use lambda_http::Context;
+use lambda_http::request::RequestContext;
+use lambda_http::{Body, Context, RequestExt};
 use lambda_web_adapter::{Adapter, AdapterOptions, LambdaInvokeMode, Protocol};
 use tower::{Service, ServiceBuilder};
 
@@ -660,6 +660,186 @@ async fn test_http_context_headers() {
 }
 
 #[tokio::test]
+async fn test_non_http_event_routes_to_configured_pass_through_path() {
+    let app_server = MockServer::start();
+    let event = pass_through_bedrock_agent_event();
+    let expected_body = event.clone();
+
+    let endpoint = app_server.mock(move |when, then| {
+        when.method(POST)
+            .path("/lambda-events")
+            .header("content-type", "application/json")
+            .body(expected_body);
+        then.status(200).body("pass-through");
+    });
+
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        pass_through_path: "/lambda-events".to_string(),
+        ..Default::default()
+    })
+    .expect("Failed to create adapter");
+    let mut request = lambda_http::request::from_str(&event).expect("Failed to deserialize event");
+
+    assert!(matches!(request.request_context(), RequestContext::PassThrough));
+    add_lambda_context_to_request(&mut request);
+
+    let response = adapter.call(request).await.expect("Request failed");
+
+    endpoint.assert();
+    assert_eq!(200, response.status());
+    assert_eq!("pass-through", body_to_string(response).await);
+}
+
+#[test]
+fn test_http_event_request_context_classification() {
+    let sqs_event = include_str!("../../examples/sqs-expressjs/events/sqs.json");
+    let sqs_request = lambda_http::request::from_str(sqs_event).expect("Failed to deserialize SQS event");
+    assert!(matches!(sqs_request.request_context(), RequestContext::PassThrough));
+
+    let api_gateway_v1_event = json!({
+        "httpMethod": "GET",
+        "path": "/health",
+        "requestContext": {
+            "requestId": "abcdef",
+            "stage": "prod",
+            "httpMethod": "GET"
+        }
+    })
+    .to_string();
+    let api_gateway_v1_request =
+        lambda_http::request::from_str(&api_gateway_v1_event).expect("Failed to deserialize API Gateway V1 event");
+    assert!(matches!(
+        api_gateway_v1_request.request_context(),
+        RequestContext::ApiGatewayV1(_)
+    ));
+
+    let alb_event = json!({
+        "httpMethod": "GET",
+        "path": "/health",
+        "headers": {"host": "example.com"},
+        "requestContext": {
+            "elb": {
+                "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/example/abcdef"
+            }
+        },
+        "isBase64Encoded": false
+    })
+    .to_string();
+    let alb_request = lambda_http::request::from_str(&alb_event).expect("Failed to deserialize ALB event");
+    assert!(matches!(alb_request.request_context(), RequestContext::Alb(_)));
+
+    let api_gateway_v2_event = json!({
+        "version": "2.0",
+        "routeKey": "$default",
+        "rawPath": "/health",
+        "requestContext": {
+            "requestId": "abcdef",
+            "stage": "$default",
+            "http": {
+                "method": "GET",
+                "path": "/health",
+                "protocol": "HTTP/1.1",
+                "sourceIp": "127.0.0.1",
+                "userAgent": "curl/8.0.0"
+            }
+        },
+        "isBase64Encoded": false
+    })
+    .to_string();
+    let api_gateway_v2_request =
+        lambda_http::request::from_str(&api_gateway_v2_event).expect("Failed to deserialize API Gateway V2 event");
+    assert!(matches!(
+        api_gateway_v2_request.request_context(),
+        RequestContext::ApiGatewayV2(_)
+    ));
+}
+
+#[tokio::test]
+async fn test_vpc_lattice_v2_event_routes_with_path_query_and_context() {
+    let app_server = MockServer::start();
+    let event = vpc_lattice_v2_event();
+
+    let expected_request_context = json!({
+        "serviceNetworkArn": VPC_LATTICE_SERVICE_NETWORK_ARN,
+        "serviceArn": VPC_LATTICE_SERVICE_ARN,
+        "targetGroupArn": VPC_LATTICE_TARGET_GROUP_ARN,
+        "identity": {
+            "sourceVpcArn": "arn:aws:ec2:ap-southeast-2:123456789012:vpc/vpc-0b8276c84697e7339",
+            "type": "AWS_IAM",
+            "principal": "arn:aws:iam::123456789012:role/service-role/HealthChecker",
+            "principalOrgID": "o-50dc6c495c0c9188"
+        },
+        "region": "ap-southeast-2",
+        "timeEpoch": "1724875399456789"
+    });
+
+    let endpoint = app_server.mock(move |when, then| {
+        when.method(POST)
+            .path("/health")
+            .query_param("state", "prod")
+            .query_param("mode", "fast")
+            .query_param("mode", "turbo")
+            .body(VPC_LATTICE_BODY)
+            .is_true(move |req| {
+                let mut mode_values: Vec<_> = req
+                    .query_params()
+                    .into_iter()
+                    .filter(|(key, _)| key == "mode")
+                    .map(|(_, value)| value)
+                    .collect();
+                mode_values.sort_unstable();
+                if mode_values != vec!["fast".to_string(), "turbo".to_string()] {
+                    return false;
+                }
+
+                let headers = req.headers();
+                let Some(request_context) = headers
+                    .get("x-amzn-request-context")
+                    .and_then(|value| value.to_str().ok())
+                else {
+                    return false;
+                };
+
+                let Ok(request_context) = serde_json::from_str::<serde_json::Value>(request_context) else {
+                    return false;
+                };
+
+                request_context == expected_request_context
+            });
+        then.status(200).body("vpc lattice");
+    });
+
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
+    })
+    .expect("Failed to create adapter");
+
+    let mut request = lambda_http::request::from_str(&event).expect("Failed to deserialize VPC Lattice event");
+
+    match request.request_context() {
+        RequestContext::VpcLattice(context) => {
+            assert_eq!(VPC_LATTICE_TARGET_GROUP_ARN, context.target_group_arn);
+        }
+        other => panic!("unexpected request context: {other:?}"),
+    }
+
+    add_lambda_context_to_request(&mut request);
+    let response = adapter.call(request).await.expect("Request failed");
+
+    endpoint.assert();
+    assert_eq!(200, response.status());
+    assert_eq!("vpc lattice", body_to_string(response).await);
+}
+
+#[tokio::test]
 async fn test_http_content_encoding_suffix() {
     // Start app server
     let app_server = MockServer::start();
@@ -1199,6 +1379,89 @@ fn add_lambda_context_to_request(request: &mut Request<Body>) {
 
     // add Context to the request
     request.extensions_mut().insert(context);
+}
+
+fn pass_through_bedrock_agent_event() -> String {
+    json!({
+        "messageVersion": "1.0",
+        "agent": {
+            "name": "AgentName",
+            "id": "AgentID",
+            "alias": "AgentAlias",
+            "version": "AgentVersion"
+        },
+        "inputText": "InputText",
+        "sessionId": "SessionID",
+        "actionGroup": "ActionGroup",
+        "apiPath": "/api/path",
+        "httpMethod": "POST",
+        "parameters": [
+            {
+                "name": "param1",
+                "type": "string",
+                "value": "value1"
+            }
+        ],
+        "requestBody": {
+            "content": {
+                "application/json": {
+                    "properties": [
+                        {
+                            "name": "prop1",
+                            "type": "string",
+                            "value": "value1"
+                        }
+                    ]
+                }
+            }
+        },
+        "sessionAttributes": {
+            "attr1": "value1"
+        },
+        "promptSessionAttributes": {
+            "promptAttr1": "value1"
+        }
+    })
+    .to_string()
+}
+
+const VPC_LATTICE_SERVICE_NETWORK_ARN: &str =
+    "arn:aws:vpc-lattice:ap-southeast-2:123456789012:servicenetwork/sn-0bf3f2882e9cc805a";
+const VPC_LATTICE_SERVICE_ARN: &str = "arn:aws:vpc-lattice:ap-southeast-2:123456789012:service/svc-0a40eebed65f8d69c";
+const VPC_LATTICE_TARGET_GROUP_ARN: &str =
+    "arn:aws:vpc-lattice:ap-southeast-2:123456789012:targetgroup/tg-6d0ecf831eec9f09";
+const VPC_LATTICE_BODY: &str = r#"{"message":"hello from vpc lattice"}"#;
+
+fn vpc_lattice_v2_event() -> String {
+    json!({
+        "version": "2.0",
+        "path": "/health",
+        "method": "POST",
+        "headers": {
+            "accept": ["*/*"],
+            "user-agent": ["curl/7.68.0"]
+        },
+        "queryStringParameters": {
+            "state": ["prod"],
+            "mode": ["fast", "turbo"]
+        },
+        "body": VPC_LATTICE_BODY,
+        "isBase64Encoded": false,
+        "requestContext": {
+            "serviceNetworkArn": VPC_LATTICE_SERVICE_NETWORK_ARN,
+            "serviceArn": VPC_LATTICE_SERVICE_ARN,
+            "targetGroupArn": VPC_LATTICE_TARGET_GROUP_ARN,
+            "identity": {
+                "sourceVpcArn": "arn:aws:ec2:ap-southeast-2:123456789012:vpc/vpc-0b8276c84697e7339",
+                "type": "AWS_IAM",
+                "principal": "arn:aws:iam::123456789012:role/service-role/HealthChecker",
+                "principalOrgID": "o-50dc6c495c0c9188"
+            },
+            "region": "ap-southeast-2",
+            "timeEpoch": "1724875399456789"
+        }
+    })
+    .to_string()
 }
 
 #[tokio::test]
