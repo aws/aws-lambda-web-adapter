@@ -79,7 +79,7 @@ jobs:
   # Docker-based examples verified with sam local start-api. Each matrix entry
   # asserts an exact status (and optional body substring) via verify-http.sh,
   # not just liveness.
-  # Excluded: nginx, php, flask, aspnet-mvc (web app hardcodes port 8080
+  # Excluded: nginx, flask, aspnet-mvc (web app hardcodes port 8080
   # which conflicts with SAM's Lambda Runtime Interface Emulator).
   test-image:
     needs: [build-layer]
@@ -175,7 +175,7 @@ jobs:
   # `port` is the app's listening port, passed through to the adapter via the
   # PORT parameter; it must differ from SAM's RIE port (8080).
   # Excluded: aspnet-*-zip (hardcode port 8080),
-  # bun/nginx/php-zip (need third-party layers), arm64 examples (javalin, rust-*),
+  # bun/nginx (need third-party layers), arm64 examples (javalin, rust-*),
   # nextjs-zip (Makefile produces a zip artifact incompatible with sam local).
   test-zip:
     needs: [build-layer]

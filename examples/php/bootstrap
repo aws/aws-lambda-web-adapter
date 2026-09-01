@@ -1,8 +1,0 @@
-#!/bin/sh
-
-# Fail on error
-set -e
-
-/opt/php/bin/php-fpm --force-stderr --fpm-config /opt/php/etc/php-fpm.conf
-
-exec /opt/nginx/bin/nginx -c /opt/nginx/conf/nginx.conf -g "daemon off;"

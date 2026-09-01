@@ -18,7 +18,7 @@ Resources:
       Architectures:
         - x86_64
       Handler: bootstrap
-      Runtime: provided.al2
+      Runtime: provided.al2023
       Environment:
         Variables:
           RUST_LOG: debug
