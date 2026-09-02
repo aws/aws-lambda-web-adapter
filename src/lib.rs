@@ -626,65 +626,79 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
     Some(segments)
 }
 
-/// True if `request_path` resolves to the same route as the `configured` hook
-/// path under strict canonicalization. A configured value of `None` never
-/// matches.
+/// Precomputes the guard target for a configured hook path.
 ///
-/// Two edge cases are handled so the guard neither fails open nor over-blocks:
+/// Runs the operator-configured path through the SAME `Url::set_path`
+/// transformation that `SnapStartHooks::post_hook` uses to reach the app
+/// (`domain.set_path(configured)`), so the guard protects exactly the route the
+/// app actually serves — not the raw env-var string. Returns:
 ///
-/// * **Uncanonicalizable config** (e.g. `/snap%start` — a malformed `%` escape):
-///   the canonical form is unknown, but `SnapStartHooks::post_hook` will still
-///   serve that raw route via `Url::set_path`, so returning `false` would fail
-///   OPEN. Instead we warn and fall back to guarding the raw configured route
-///   (leading-slash-normalized byte compare) so the documented route stays
-///   protected.
-/// * **Undecidable request path** (`canonicalize_hook_path` returns `None`): the
-///   guard is invoked on the outbound `app_url.path()` — the exact, already
-///   `Url`-normalized string that will be sent to the app (see `fetch_response`).
-///   A path that still fails a single percent-decode there (a bare `%`, a
-///   control byte) is one the app's own router cannot decode to the hook route
-///   either, so it is decidably NOT the hook and is passed through. There is no
-///   fail-open here: the outbound-path guarding closed the guard-vs-router
-///   divergence that a fail-closed heuristic was previously guarding against,
-///   and that heuristic (a leading-segment prefix match) over-blocked unrelated
-///   routes such as `/reports/100%` under a `/reports/*` hook.
-fn matches_hook_path(configured: &Option<String>, request_path: &str) -> bool {
-    let Some(configured) = configured.as_deref() else {
-        return false;
-    };
-    // An empty or root-only configured hook path (e.g. "" or "/") would
-    // canonicalize to the empty segment list and 403 every request to `/`.
-    // A hook route must be a real sub-path, so treat these as "no hook".
-    // (Env parsing already drops empty values; this also covers a field set
-    // directly on the public `Adapter`.)
+/// * `None` — no hook configured, or an empty/root-only path (`""`, `/`) that
+///   would match every request to `/`; the guard treats these as "no hook".
+/// * `Some(HookTarget::Canonical(segments))` — the normal case: the post-`set_path`
+///   route canonicalized (percent-decode, collapse `//`/`.`/`..`, case-fold).
+/// * `Some(HookTarget::Raw(path))` — the post-`set_path` route could not be
+///   canonicalized (a surviving control byte / malformed escape). The guard then
+///   compares the raw post-`set_path` string on both sides; since the request side
+///   is also a post-`set_path` `app_url.path()`, this is a like-for-like compare,
+///   not the raw-vs-normalized mismatch that previously left the route unguarded.
+fn hook_target(domain: &Url, configured: &Option<String>) -> Option<HookTarget> {
+    let configured = configured.as_deref()?;
     if configured.is_empty() || configured.trim_matches('/').is_empty() {
-        return false;
+        return None;
     }
-    // The configured path is operator-controlled. If it cannot be canonicalized
-    // the guard cannot know the hook's canonical form, but the outbound hook
-    // still serves the raw route — so guard the raw route rather than fail open.
-    let Some(want) = canonicalize_hook_path(configured) else {
-        tracing::warn!(
-            configured = %configured,
-            "SnapStart hook path is not canonicalizable; guarding the raw configured route only. \
-             Fix the configured path (percent-encoding / control bytes) to restore strict matching."
-        );
-        let want_raw = if configured.starts_with('/') {
-            configured.to_string()
-        } else {
-            format!("/{configured}")
-        };
-        let got_raw = if request_path.starts_with('/') {
-            request_path.to_string()
-        } else {
-            format!("/{request_path}")
-        };
-        return got_raw == want_raw;
-    };
-    // An undecidable request path is one the app router cannot decode to the
-    // hook route either (the guard runs on the same normalized outbound path),
-    // so it is not the hook — pass it through.
-    canonicalize_hook_path(request_path).is_some_and(|got| got == want)
+    // Normalize the configured path exactly as post_hook will send it, so the two
+    // sides of the guard comparison cannot diverge by construction.
+    let mut u = domain.clone();
+    u.set_path(configured);
+    let outbound = u.path().to_string();
+    match canonicalize_hook_path(&outbound) {
+        Some(segments) => Some(HookTarget::Canonical(segments)),
+        None => {
+            tracing::warn!(
+                configured = %configured,
+                outbound = %outbound,
+                "SnapStart hook path is not canonicalizable after URL normalization; \
+                 guarding the raw normalized route only. Fix the configured path \
+                 (percent-encoding / control bytes) to restore strict matching."
+            );
+            Some(HookTarget::Raw(outbound))
+        }
+    }
+}
+
+/// Precomputed guard target for a configured SnapStart hook path. See [`hook_target`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HookTarget {
+    /// Canonicalized post-`set_path` route (the normal case).
+    Canonical(Vec<String>),
+    /// Raw post-`set_path` route, used when canonicalization is impossible.
+    Raw(String),
+}
+
+/// True if the outbound request path resolves to the precomputed hook route.
+///
+/// Both sides derive from `Url::set_path`: `want` is computed by [`hook_target`]
+/// from `domain.set_path(configured)`, and `outbound_request_path` is the request's
+/// `app_url.path()` (also post-`set_path`; see `fetch_response`). Because the two
+/// sides share the identical normalization, a configured value that `set_path`
+/// rewrites (e.g. `/snapstart\after` → `/snapstart/after`) is guarded on its
+/// rewritten form, closing the divergence where the app served a route the guard
+/// did not protect.
+///
+/// * `HookTarget::Canonical` — canonicalize the request path and compare segment
+///   lists. An undecidable request path (malformed escape / control byte) is one
+///   the app router cannot resolve to the hook either, so it is NOT the hook and
+///   passes through.
+/// * `HookTarget::Raw` — compare the raw post-`set_path` strings (like-for-like).
+fn matches_hook_path(want: &Option<HookTarget>, outbound_request_path: &str) -> bool {
+    match want {
+        None => false,
+        Some(HookTarget::Canonical(want_segments)) => {
+            canonicalize_hook_path(outbound_request_path).is_some_and(|got| &got == want_segments)
+        }
+        Some(HookTarget::Raw(want_raw)) => outbound_request_path == want_raw,
+    }
 }
 
 /// The Lambda Web Adapter.
@@ -736,6 +750,12 @@ pub struct Adapter<C, B> {
     error_status_codes: Option<Vec<u16>>,
     snapstart_before_checkpoint_path: Option<String>,
     snapstart_after_restore_path: Option<String>,
+    /// Precomputed guard target for the before-checkpoint hook path, derived from
+    /// `domain.set_path(configured)` so it matches the route the app actually
+    /// serves (see [`hook_target`]).
+    hook_target_before_checkpoint: Option<HookTarget>,
+    /// Precomputed guard target for the after-restore hook path (see [`hook_target`]).
+    hook_target_after_restore: Option<HookTarget>,
     pool_idle_timeout: Duration,
     readiness_check_timeout: Option<Duration>,
 }
@@ -773,16 +793,19 @@ fn pool_idle_timeout_from_env() -> Duration {
 
 /// Reads the readiness-check timeout from
 /// [`ENV_READINESS_CHECK_TIMEOUT_SECONDS`] (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
-/// Accepts fractional seconds (e.g. `0.5`). Returns `None` when unset, unparseable,
-/// or not a finite non-negative number — meaning the readiness wait is unbounded
-/// (historical behavior). The finite/non-negative guard also avoids the panic
-/// `Duration::from_secs_f64` raises on NaN, infinity, or negatives.
+/// Accepts fractional seconds (e.g. `0.5`). Returns `None` — meaning the readiness
+/// wait is unbounded (historical behavior) — when the value is unset, unparseable,
+/// non-positive (including `0`, which would otherwise expire instantly and fail
+/// every check), or not representable as a `Duration` (NaN, infinity, negative, or
+/// overflow). `Duration::try_from_secs_f64` rejects all the panic cases of
+/// `from_secs_f64` in one step, so there is no separate finite/range guard to keep
+/// in sync.
 fn readiness_check_timeout_from_env() -> Option<Duration> {
     env::var(ENV_READINESS_CHECK_TIMEOUT_SECONDS)
         .ok()
         .and_then(|v| v.trim().parse::<f64>().ok())
-        .filter(|secs| secs.is_finite() && *secs >= 0.0)
-        .map(Duration::from_secs_f64)
+        .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
+        .filter(|d| !d.is_zero())
 }
 
 impl Adapter<HttpConnector, Body> {
@@ -839,6 +862,12 @@ impl Adapter<HttpConnector, Body> {
                 ))
             })?;
 
+        // Precompute the SnapStart hook guard targets while `domain` is still in
+        // scope, so the guard compares against the route the app actually serves
+        // (`domain.set_path(configured)`) rather than the raw configured string.
+        let hook_target_before_checkpoint = hook_target(&domain, &options.snapstart_before_checkpoint_path);
+        let hook_target_after_restore = hook_target(&domain, &options.snapstart_after_restore_path);
+
         // Validate TCP protocol requirements
         if options.readiness_check_protocol == Protocol::Tcp {
             if healthcheck_url.host().is_none() {
@@ -873,6 +902,8 @@ impl Adapter<HttpConnector, Body> {
             error_status_codes: options.error_status_codes.clone(),
             snapstart_before_checkpoint_path: options.snapstart_before_checkpoint_path.clone(),
             snapstart_after_restore_path: options.snapstart_after_restore_path.clone(),
+            hook_target_before_checkpoint,
+            hook_target_after_restore,
             pool_idle_timeout: options.pool_idle_timeout,
             readiness_check_timeout: options.readiness_check_timeout,
         })
@@ -1243,8 +1274,8 @@ impl Adapter<HttpConnector, Body> {
         // (malformed escapes, control bytes) are rejected too. See
         // `matches_hook_path`.
         let outbound_path = app_url.path();
-        if matches_hook_path(&self.snapstart_before_checkpoint_path, outbound_path)
-            || matches_hook_path(&self.snapstart_after_restore_path, outbound_path)
+        if matches_hook_path(&self.hook_target_before_checkpoint, outbound_path)
+            || matches_hook_path(&self.hook_target_after_restore, outbound_path)
         {
             tracing::warn!(path = %outbound_path, "rejecting external request to SnapStart hook path");
             return Ok(Response::builder()
@@ -1459,7 +1490,7 @@ mod tests {
         assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_secs(20)));
 
         // Unparseable / non-finite / negative -> None (unbounded), never a panic.
-        for bad in ["nope", "-1", "NaN", "inf"] {
+        for bad in ["nope", "-1", "NaN", "inf", "0", "0.0", "1e300", "99999999999999999999"] {
             std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, bad);
             assert_eq!(
                 readiness_check_timeout_from_env(),
@@ -2290,49 +2321,72 @@ mod tests {
         assert_eq!(canonicalize_hook_path("/snapstart/af\u{0}ter"), None);
     }
 
+    /// Test helper mirroring the real guard: the configured path is turned into a
+    /// [`HookTarget`] via [`hook_target`] (through `set_path`), and the request path
+    /// is passed through the same `set_path` normalization the request side uses in
+    /// `fetch_response` (`app_url.path()`). Both sides therefore share the identical
+    /// transformation, exactly as in production.
+    fn guard_blocks(configured: &str, request: &str) -> bool {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        let want = hook_target(&domain, &Some(configured.to_string()));
+        let mut u = domain.clone();
+        u.set_path(request);
+        matches_hook_path(&want, u.path())
+    }
+
     /// Regression for the single-pass fix: with a hook that shares a first
     /// segment, a validly single-encoded request under that segment must NOT be
     /// blocked (bot finding: `/reports/100%25` vs hook `/reports/snapshot`).
     #[test]
     fn test_matches_hook_path_valid_encoded_percent_not_blocked() {
-        let cfg = Some("/reports/snapshot".to_string());
         assert!(
-            !matches_hook_path(&cfg, "/reports/100%25"),
+            !guard_blocks("/reports/snapshot", "/reports/100%25"),
             "/reports/100%25 must not 403"
         );
         // The genuine single-encoded hook spelling is still blocked.
-        assert!(matches_hook_path(&cfg, "/reports/%73napshot"));
+        assert!(guard_blocks("/reports/snapshot", "/reports/%73napshot"));
+    }
+
+    /// The configured side must be normalized through `set_path` too, so a
+    /// configured value that `set_path` rewrites still guards the route the app
+    /// actually serves (bot SECURITY finding: `/snapstart\after`).
+    #[test]
+    fn test_matches_hook_path_configured_side_normalized_through_set_path() {
+        // Configured with a backslash: set_path rewrites it to `/snapstart/after`,
+        // which is the route the app serves — so requests to it must be blocked.
+        assert!(guard_blocks("/snapstart\\after", "/snapstart/after"));
+        assert!(guard_blocks("/snapstart\\after", "/snapstart\\after"));
+        assert!(guard_blocks("/snapstart\\after", "/SnapStart/After/"));
+        // A genuinely different route is still allowed.
+        assert!(!guard_blocks("/snapstart\\after", "/snapstart/other"));
+
+        // Dot segments / duplicate slashes in the configured value are resolved by
+        // set_path + canonicalize, so the effective route is still guarded.
+        assert!(guard_blocks("/a/../snapstart//after", "/snapstart/after"));
     }
 
     #[test]
     fn test_matches_hook_path_undecidable_passes_through() {
-        let cfg = Some("/snapstart/after".to_string());
-        assert!(matches_hook_path(&cfg, "/SnapStart/After/"));
-        assert!(!matches_hook_path(&cfg, "/snapstart/after-report"));
+        assert!(guard_blocks("/snapstart/after", "/SnapStart/After/"));
+        assert!(!guard_blocks("/snapstart/after", "/snapstart/after-report"));
         assert!(!matches_hook_path(&None, "/snapstart/after")); // no hook configured
         assert!(!matches_hook_path(&None, "/snapstart/%2")); // ...and none => never match
 
         // An undecidable request path (bare `%`, control byte) is one the app
         // router cannot decode to the hook route either, so it is NOT the hook
         // and passes through — even when it shares the hook's leading segment.
-        // (Previously these fell into a fail-closed prefix heuristic that also
-        // over-blocked unrelated routes; the guard now runs on the normalized
-        // outbound path, so there is no divergence left to fail closed against.)
-        assert!(!matches_hook_path(&cfg, "/snapstart/%2"));
-        assert!(!matches_hook_path(&cfg, "/snapstart/%")); // trailing bare %
-        assert!(!matches_hook_path(&cfg, "/snapstart/af\u{0}ter")); // control byte
+        assert!(!guard_blocks("/snapstart/after", "/snapstart/%2"));
+        assert!(!guard_blocks("/snapstart/after", "/snapstart/%")); // trailing bare %
+        assert!(!guard_blocks("/snapstart/after", "/snapstart/af\u{0}ter")); // control byte
 
         // Unrelated undecidable routes are likewise not blocked (bot findings:
         // /reports/100% under a shared-prefix hook, /100%, /other/%2).
-        assert!(!matches_hook_path(&cfg, "/reports/100%"));
-        assert!(!matches_hook_path(&cfg, "/other/%2"));
-        assert!(!matches_hook_path(&cfg, "/100%"));
-        assert!(!matches_hook_path(&cfg, "/%2"));
+        assert!(!guard_blocks("/snapstart/after", "/reports/100%"));
+        assert!(!guard_blocks("/snapstart/after", "/other/%2"));
+        assert!(!guard_blocks("/snapstart/after", "/100%"));
+        assert!(!guard_blocks("/snapstart/after", "/%2"));
         // The exact bot-reported case: hook shares the first segment.
-        assert!(!matches_hook_path(
-            &Some("/reports/snapshot".to_string()),
-            "/reports/100%"
-        ));
+        assert!(!guard_blocks("/reports/snapshot", "/reports/100%"));
     }
 
     #[test]
@@ -2340,23 +2394,11 @@ mod tests {
         // An empty or root-only configured hook path must never 403 the app root
         // (bot finding: AWS_LWA_..._PATH="" blocks "/").
         for cfg in ["", "/", "//", "///"] {
-            let c = Some(cfg.to_string());
-            assert!(!matches_hook_path(&c, "/"), "config {cfg:?} must not block /");
+            assert!(!guard_blocks(cfg, "/"), "config {cfg:?} must not block /");
             assert!(
-                !matches_hook_path(&c, "/anything"),
+                !guard_blocks(cfg, "/anything"),
                 "config {cfg:?} must not block /anything"
             );
         }
-    }
-
-    #[test]
-    fn test_matches_hook_path_uncanonicalizable_config_guards_raw_route() {
-        // A configured hook path that cannot be canonicalized (malformed % escape)
-        // must NOT fail open: the raw route stays guarded, distinct routes do not.
-        let broken = Some("/snap%start".to_string());
-        assert!(matches_hook_path(&broken, "/snap%start")); // exact raw route blocked
-        assert!(matches_hook_path(&broken, "snap%start")); // leading-slash normalized
-        assert!(!matches_hook_path(&broken, "/snapstart/after")); // unrelated route allowed
-        assert!(!matches_hook_path(&broken, "/hello"));
     }
 }

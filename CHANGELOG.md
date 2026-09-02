@@ -30,6 +30,13 @@
 
 ### Bug Fixes
 
+- Normalize the configured SnapStart hook path through the same `Url::set_path`
+  transformation used to call the hook, so the guard protects exactly the route the
+  application serves. Previously the guard canonicalized the raw configured string
+  while comparing it against the already-`set_path`-normalized outbound request path;
+  a configured value that `set_path` rewrites (e.g. `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/snapstart\after`,
+  which the app serves as `/snapstart/after`) left the actual route externally
+  reachable. Both sides are now derived from `set_path`, closing the divergence.
 - Fix `AWS_LWA_REMOVE_BASE_PATH` stripping to remove exactly one leading occurrence
   on a path-segment boundary. Previously it used `trim_start_matches`, which stripped
   the prefix repeatedly and byte-wise: with `AWS_LWA_REMOVE_BASE_PATH=/api`,
