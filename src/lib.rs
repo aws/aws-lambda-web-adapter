@@ -633,8 +633,9 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
 /// (`domain.set_path(configured)`), so the guard protects exactly the route the
 /// app actually serves — not the raw env-var string. Returns:
 ///
-/// * `None` — no hook configured, or an empty/root-only path (`""`, `/`) that
-///   would match every request to `/`; the guard treats these as "no hook".
+/// * `None` — no hook configured, or a path that canonicalizes to the root
+///   (`""`, `/`, `//`, `/..`, `/.`, `/foo/..`, `/%2f`, …) and would otherwise
+///   match every request to `/`; the guard treats these as "no hook".
 /// * `Some(HookTarget::Canonical(segments))` — the normal case: the post-`set_path`
 ///   route canonicalized (percent-decode, collapse `//`/`.`/`..`, case-fold).
 /// * `Some(HookTarget::Raw(path))` — the post-`set_path` route could not be
@@ -644,7 +645,7 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
 ///   not the raw-vs-normalized mismatch that previously left the route unguarded.
 fn hook_target(domain: &Url, configured: &Option<String>) -> Option<HookTarget> {
     let configured = configured.as_deref()?;
-    if configured.is_empty() || configured.trim_matches('/').is_empty() {
+    if configured.is_empty() {
         return None;
     }
     // Normalize the configured path exactly as post_hook will send it, so the two
@@ -653,6 +654,12 @@ fn hook_target(domain: &Url, configured: &Option<String>) -> Option<HookTarget> 
     u.set_path(configured);
     let outbound = u.path().to_string();
     match canonicalize_hook_path(&outbound) {
+        // A configured path that canonicalizes to the root (e.g. "/", "//", "/..",
+        // "/.", "/foo/..", "/%2f") would match every request to `/`. Treat it as
+        // "no hook" rather than 403-ing the app root. This decision must live AFTER
+        // canonicalization: a raw pre-check on the configured string misses the
+        // spellings that only collapse to root once `..`/`.`/encoded-slash resolve.
+        Some(segments) if segments.is_empty() => None,
         Some(segments) => Some(HookTarget::Canonical(segments)),
         None => {
             tracing::warn!(
@@ -2392,8 +2399,9 @@ mod tests {
     #[test]
     fn test_matches_hook_path_empty_or_root_config_never_matches() {
         // An empty or root-only configured hook path must never 403 the app root
-        // (bot finding: AWS_LWA_..._PATH="" blocks "/").
-        for cfg in ["", "/", "//", "///"] {
+        // (bot finding: AWS_LWA_..._PATH="" blocks "/"). This includes spellings
+        // that only collapse to root after canonicalization (`..`, `.`, `%2f`).
+        for cfg in ["", "/", "//", "///", "/..", "/.", "/foo/..", "/%2f", "/a/../.."] {
             assert!(!guard_blocks(cfg, "/"), "config {cfg:?} must not block /");
             assert!(
                 !guard_blocks(cfg, "/anything"),
