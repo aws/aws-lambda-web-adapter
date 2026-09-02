@@ -82,6 +82,11 @@ const ENV_ERROR_STATUS_CODES: &str = "AWS_LWA_ERROR_STATUS_CODES";
 const ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH: &str = "AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH";
 const ENV_SNAPSTART_AFTER_RESTORE_PATH: &str = "AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH";
 const ENV_LAMBDA_RUNTIME_API_PROXY: &str = "AWS_LWA_LAMBDA_RUNTIME_API_PROXY";
+const ENV_POOL_IDLE_TIMEOUT_SECONDS: &str = "AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS";
+
+/// Default idle-connection keep-alive for the adapter's inner-app HTTP client,
+/// used when [`ENV_POOL_IDLE_TIMEOUT_SECONDS`] is unset or unparseable.
+const DEFAULT_POOL_IDLE_TIMEOUT_SECONDS: u64 = 4;
 
 // Deprecated environment variable names (without prefix)
 const ENV_PORT_DEPRECATED: &str = "PORT";
@@ -712,11 +717,24 @@ pub struct Adapter<C, B> {
 /// Builds the hyper client used to talk to the inner web application.
 ///
 /// Shared by [`Adapter::new`] and the SnapStart after-restore hook so the
-/// post-restore client is built identically to the original.
+/// post-restore client is built identically to the original. The idle-connection
+/// keep-alive is configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`
+/// (default 4 seconds); see [`pool_idle_timeout`].
 fn build_client() -> Client<HttpConnector, Body> {
     let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
-    builder.pool_idle_timeout(Duration::from_secs(4));
+    builder.pool_idle_timeout(pool_idle_timeout());
     builder.build(HttpConnector::new())
+}
+
+/// Idle-connection keep-alive for the inner-app HTTP client, configurable via
+/// [`ENV_POOL_IDLE_TIMEOUT_SECONDS`] (`AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`).
+/// Falls back to [`DEFAULT_POOL_IDLE_TIMEOUT_SECONDS`] when unset or unparseable.
+fn pool_idle_timeout() -> Duration {
+    let secs = env::var(ENV_POOL_IDLE_TIMEOUT_SECONDS)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_POOL_IDLE_TIMEOUT_SECONDS);
+    Duration::from_secs(secs)
 }
 
 impl Adapter<HttpConnector, Body> {
@@ -1303,6 +1321,33 @@ mod tests {
 
         std::env::remove_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH);
         std::env::remove_var(ENV_SNAPSTART_AFTER_RESTORE_PATH);
+    }
+
+    // All cases share one test because they mutate the same process-global env
+    // var; separate tests would let the parallel runner clobber each other.
+    #[test]
+    fn test_pool_idle_timeout() {
+        // Unset -> default 4s.
+        std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
+        assert_eq!(pool_idle_timeout(), Duration::from_secs(4));
+
+        // Explicit value -> parsed.
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "30");
+        assert_eq!(pool_idle_timeout(), Duration::from_secs(30));
+
+        // Zero is honored (disables idle keep-alive by timeout).
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "0");
+        assert_eq!(pool_idle_timeout(), Duration::from_secs(0));
+
+        // Surrounding whitespace tolerated.
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "  15  ");
+        assert_eq!(pool_idle_timeout(), Duration::from_secs(15));
+
+        // Unparseable -> default 4s.
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "not-a-number");
+        assert_eq!(pool_idle_timeout(), Duration::from_secs(4));
+
+        std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
     }
 
     #[tokio::test]

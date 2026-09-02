@@ -21,6 +21,7 @@ All configuration is done through environment variables, set either in your Dock
 | `AWS_LWA_LAMBDA_RUNTIME_API_PROXY` | Proxy URL for Lambda Runtime API requests | None |
 | `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` | Inner-app path the adapter POSTs to before a SnapStart snapshot | None |
 | `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` | Inner-app path the adapter POSTs to after a SnapStart restore | None |
+| `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` | Idle keep-alive (seconds) for the adapter's connection to your app | `4` |
 
 ## Deprecated Variables
 
