@@ -609,11 +609,16 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
 ///   OPEN. Instead we warn and fall back to guarding the raw configured route
 ///   (leading-slash-normalized byte compare) so the documented route stays
 ///   protected.
-/// * **Undecidable request path** (`canonicalize_hook_path` returns `None`): we
-///   fail CLOSED, but only for paths that are plausibly the hook route — i.e.
-///   whose decodable leading segments are a prefix of the hook's canonical
-///   segments. An unrelated route with a stray `%` (e.g. `/reports/100%`) is
-///   left alone so enabling SnapStart does not 403 it.
+/// * **Undecidable request path** (`canonicalize_hook_path` returns `None`): the
+///   guard is invoked on the outbound `app_url.path()` — the exact, already
+///   `Url`-normalized string that will be sent to the app (see `fetch_response`).
+///   A path that still fails a single percent-decode there (a bare `%`, a
+///   control byte) is one the app's own router cannot decode to the hook route
+///   either, so it is decidably NOT the hook and is passed through. There is no
+///   fail-open here: the outbound-path guarding closed the guard-vs-router
+///   divergence that a fail-closed heuristic was previously guarding against,
+///   and that heuristic (a leading-segment prefix match) over-blocked unrelated
+///   routes such as `/reports/100%` under a `/reports/*` hook.
 fn matches_hook_path(configured: &Option<String>, request_path: &str) -> bool {
     let Some(configured) = configured.as_deref() else {
         return false;
@@ -647,45 +652,10 @@ fn matches_hook_path(configured: &Option<String>, request_path: &str) -> bool {
         };
         return got_raw == want_raw;
     };
-    match canonicalize_hook_path(request_path) {
-        Some(got) => got == want,
-        // Undecidable request path: fail closed only when it is plausibly the
-        // hook route (its decodable leading segments prefix the hook's), so an
-        // unrelated route with a stray `%` is not blocked.
-        None => decodable_prefix_matches(request_path, &want),
-    }
-}
-
-/// For a request path that does not fully canonicalize, decode the leading
-/// segments that DO canonicalize cleanly (those before the first segment
-/// containing an undecidable byte) and test whether that non-empty prefix is a
-/// prefix of `hook`. Returns true only when the undecidable path is plausibly
-/// the hook route (so the guard fails closed on it); false for clearly-unrelated
-/// routes, including a single-segment route whose only segment is undecidable
-/// (e.g. `/100%`), which carries no evidence of hook-adjacency.
-fn decodable_prefix_matches(request_path: &str, hook: &[String]) -> bool {
-    // Split into segments and canonicalize each independently, stopping at the
-    // first segment that is itself undecidable. A leading `/`, empty segments,
-    // `.` and `..` are handled the same way `canonicalize_hook_path` does.
-    let mut decoded: Vec<String> = Vec::new();
-    for seg in request_path.split('/') {
-        match seg {
-            "" | "." => continue,
-            ".." => {
-                decoded.pop();
-            }
-            s => match canonicalize_hook_path(s) {
-                // A clean single segment canonicalizes to exactly one element.
-                Some(mut segs) if segs.len() == 1 => decoded.push(segs.pop().unwrap()),
-                // Undecidable (or structurally surprising) segment: stop here.
-                _ => break,
-            },
-        }
-    }
-    // An empty decodable prefix carries no evidence the path is the hook route,
-    // so do NOT block it. Otherwise block only when the decoded leading segments
-    // are a prefix of the hook route (an undecidable tail could complete it).
-    !decoded.is_empty() && decoded.len() <= hook.len() && hook[..decoded.len()] == decoded[..]
+    // An undecidable request path is one the app router cannot decode to the
+    // hook route either (the guard runs on the same normalized outbound path),
+    // so it is not the hook — pass it through.
+    canonicalize_hook_path(request_path).is_some_and(|got| got == want)
 }
 
 /// The Lambda Web Adapter.
@@ -1942,7 +1912,7 @@ mod tests {
             "/foo/../snapstart/after", // parent segment resolves onto the hook
             "/snapstart/%61fter",      // percent-encoded 'a'
             "/SnapStart/After",        // case variance
-            "/snapstart/%2fafter",     // encoded slash: ambiguous -> reject (fail closed)
+            "/snapstart/%2fafter",     // encoded slash decodes to '/' -> matches hook route
             "/snapstart\\after",       // backslash: Url::set_path normalizes it to '/'
         ];
 
@@ -2139,28 +2109,34 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_hook_path_fail_closed() {
+    fn test_matches_hook_path_undecidable_passes_through() {
         let cfg = Some("/snapstart/after".to_string());
         assert!(matches_hook_path(&cfg, "/SnapStart/After/"));
         assert!(!matches_hook_path(&cfg, "/snapstart/after-report"));
         assert!(!matches_hook_path(&None, "/snapstart/after")); // no hook configured
         assert!(!matches_hook_path(&None, "/snapstart/%2")); // ...and none => never match
 
-        // Undecidable request path that is HOOK-ADJACENT still fails closed:
-        // its decodable prefix (`/snapstart`) prefixes the hook route.
-        assert!(matches_hook_path(&cfg, "/snapstart/%2"));
-        assert!(matches_hook_path(&cfg, "/snapstart/%")); // trailing bare %
-        assert!(matches_hook_path(&cfg, "/snapstart/af\u{0}ter")); // control byte in-route
+        // An undecidable request path (bare `%`, control byte) is one the app
+        // router cannot decode to the hook route either, so it is NOT the hook
+        // and passes through — even when it shares the hook's leading segment.
+        // (Previously these fell into a fail-closed prefix heuristic that also
+        // over-blocked unrelated routes; the guard now runs on the normalized
+        // outbound path, so there is no divergence left to fail closed against.)
+        assert!(!matches_hook_path(&cfg, "/snapstart/%2"));
+        assert!(!matches_hook_path(&cfg, "/snapstart/%")); // trailing bare %
+        assert!(!matches_hook_path(&cfg, "/snapstart/af\u{0}ter")); // control byte
 
-        // Undecidable request path that is UNRELATED must NOT be blocked just
-        // because a hook is configured (bot finding: /reports/100%).
+        // Unrelated undecidable routes are likewise not blocked (bot findings:
+        // /reports/100% under a shared-prefix hook, /100%, /other/%2).
         assert!(!matches_hook_path(&cfg, "/reports/100%"));
         assert!(!matches_hook_path(&cfg, "/other/%2"));
-
-        // Single-segment undecidable route at the root carries no hook-adjacency
-        // evidence and must NOT be blocked (bot finding: /100%).
         assert!(!matches_hook_path(&cfg, "/100%"));
         assert!(!matches_hook_path(&cfg, "/%2"));
+        // The exact bot-reported case: hook shares the first segment.
+        assert!(!matches_hook_path(
+            &Some("/reports/snapshot".to_string()),
+            "/reports/100%"
+        ));
     }
 
     #[test]
