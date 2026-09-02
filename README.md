@@ -100,8 +100,10 @@ improperly prepared application.
 
 After restore, the adapter also automatically refreshes its own HTTP connection
 to your application, so it never reuses a connection captured in the snapshot, and
-then re-runs the readiness check before admitting traffic. If the application does
-not report ready within 10 seconds of restore, the restore fails.
+then re-runs the readiness check before admitting traffic. By default this wait is
+unbounded; set `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (fractional seconds allowed)
+to bound it, in which case a restore whose application does not report ready within
+that timeout fails.
 
 > These hook paths are control-plane operations. External requests (via API
 > Gateway or ALB) that target a configured hook path receive `403 Forbidden` and

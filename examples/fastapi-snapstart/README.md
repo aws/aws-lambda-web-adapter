@@ -53,9 +53,11 @@ snapshot boundary:
 
 Both hook routes must return a `2xx` status code. A non-2xx response, a connection
 failure, or taking longer than 60 seconds to respond fails the SnapStart phase.
-Likewise, if the readiness check does not pass within 10 seconds of restore, the
-restore fails — so traffic is never served against an app that has not finished
-recovering.
+The readiness check runs on every restore; by default it waits indefinitely for the
+app to recover, but you can bound it with `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`
+(fractional seconds allowed), in which case a restore whose app does not report
+ready within that timeout fails — so traffic is never served against an app that has
+not finished recovering.
 
 These hook routes are protected: the adapter only allows them to be invoked internally
 during the SnapStart lifecycle. External callers that request `/snapstart/before` or
