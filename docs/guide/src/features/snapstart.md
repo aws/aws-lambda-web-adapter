@@ -29,7 +29,7 @@ State captured in a snapshot is shared across every restored environment. Two cl
 
 ## Securing the hook paths
 
-The hook paths are control-plane operations. External requests (via API Gateway or ALB) that target a configured hook path receive `403 Forbidden` and are never forwarded to your application. The guard matches the exact configured path, so choose paths your normal application traffic does not use (for example, `/snapstart/before` and `/snapstart/after`).
+The hook paths are control-plane operations. External requests (via API Gateway or ALB) that target a configured hook path receive `403 Forbidden` and are never forwarded to your application. The guard matches the hook route strictly: it canonicalizes both the configured path and the incoming request path (percent-decoding, collapsing `//`, `.` and `..` segments, and comparing case-insensitively) before comparing, so alternate spellings that resolve to the same route are blocked too. Choose paths your normal application traffic does not use (for example, `/snapstart/before` and `/snapstart/after`).
 
 ## Example
 
