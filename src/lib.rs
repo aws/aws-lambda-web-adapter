@@ -516,6 +516,100 @@ fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
     }
 }
 
+/// Percent-decode `input` a single pass. Returns `None` if a `%` escape is
+/// malformed (not followed by two hex digits) — the caller treats a decode
+/// failure as an ambiguous input and fails closed.
+fn percent_decode_once(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Need two hex digits after '%'.
+            let hi = bytes.get(i + 1).copied()?;
+            let lo = bytes.get(i + 2).copied()?;
+            let h = (hi as char).to_digit(16)?;
+            let l = (lo as char).to_digit(16)?;
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    // The decoded bytes must remain valid UTF-8 to be a comparable path.
+    String::from_utf8(out).ok()
+}
+
+/// Canonicalize a path into a list of lowercased segments for the strict,
+/// fail-closed SnapStart hook guard.
+///
+/// The guard must block *every* spelling that the downstream app router would
+/// resolve to the configured hook route, so this over-approximates: it
+/// percent-decodes (repeatedly, to collapse double-encoding), splits on `/`,
+/// drops empty segments (collapsing `//`, leading/trailing slashes), resolves
+/// `.`/`..`, and lowercases each segment.
+///
+/// An encoded slash (`%2f`) is decoded to a literal `/` *before* splitting, so a
+/// spelling like `/snapstart/%2fafter` collapses onto the same segment list as
+/// the hook route and is caught — while a genuinely distinct route that merely
+/// contains `%2f` produces a different segment list and is left alone. This keeps
+/// the strictness targeted: it only bites paths that canonicalize onto the hook.
+///
+/// Returns `None` only for genuinely undecidable inputs (a malformed `%` escape,
+/// non-UTF-8 after decoding, or a control/null byte). The caller treats `None`
+/// as "reject" (fail closed).
+fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
+    // Repeatedly percent-decode until stable, so `%2561` -> `%61` -> `a` and
+    // `%2f` -> `/`. A malformed escape or non-UTF-8 result yields None (reject).
+    let mut current = path.to_string();
+    for _ in 0..8 {
+        match percent_decode_once(&current) {
+            Some(decoded) if decoded == current => break,
+            Some(decoded) => current = decoded,
+            None => return None, // malformed escape -> ambiguous -> reject
+        }
+    }
+    // Reject any control/null byte on the hook-adjacent path.
+    if current.bytes().any(|b| b < 0x20 || b == 0x7F) {
+        return None;
+    }
+    let mut segments: Vec<String> = Vec::new();
+    for seg in current.split('/') {
+        match seg {
+            "" | "." => continue, // collapse empty segments and `.`
+            ".." => {
+                segments.pop(); // resolve parent segment
+            }
+            s => segments.push(s.to_ascii_lowercase()),
+        }
+    }
+    Some(segments)
+}
+
+/// True if `request_path` resolves to the same route as the `configured` hook
+/// path under strict canonicalization. A configured value of `None` never
+/// matches. When the request path is undecidable (`canonicalize_hook_path`
+/// returns `None`: malformed escape or control byte) it is treated as a match
+/// against any configured hook so the guard fails closed on garbage.
+fn matches_hook_path(configured: &Option<String>, request_path: &str) -> bool {
+    let Some(configured) = configured.as_deref() else {
+        return false;
+    };
+    // The configured path is operator-controlled; canonicalize it too. If it is
+    // itself unrepresentable, treat it as non-matching (a broken config is a
+    // separate concern, not a reason to 403 every request).
+    let Some(want) = canonicalize_hook_path(configured) else {
+        return false;
+    };
+    match canonicalize_hook_path(request_path) {
+        Some(got) => got == want,
+        // Undecidable request path: fail closed by treating it as a hit whenever
+        // a hook is configured.
+        None => true,
+    }
+}
+
 /// The Lambda Web Adapter.
 ///
 /// This is the main struct that handles forwarding Lambda events to your web application.
@@ -953,12 +1047,17 @@ impl Adapter<HttpConnector, Body> {
         let (parts, body) = event.into_parts();
 
         // strip away Base Path if environment variable REMOVE_BASE_PATH is set.
+        // Strip exactly ONE leading occurrence, and only on a path-segment boundary,
+        // so `/api/api/order` -> `/api/order` (not `/order`) and `/apiorder` is left
+        // untouched (a partial-segment prefix must not be stripped).
         if let Some(base_path) = self.base_path.as_deref() {
-            let stripped = path.trim_start_matches(base_path);
-            if stripped.len() != path.len() {
-                tracing::debug!(base_path = %base_path, original = %path, stripped = %stripped, "stripped base path");
+            if let Some(rest) = path.strip_prefix(base_path) {
+                if rest.is_empty() || rest.starts_with('/') {
+                    let stripped = if rest.is_empty() { "/" } else { rest };
+                    tracing::debug!(base_path = %base_path, original = %path, stripped = %stripped, "stripped base path");
+                    path = stripped;
+                }
             }
-            path = stripped;
         }
 
         if matches!(request_context, RequestContext::PassThrough) && parts.method == Method::POST {
@@ -968,8 +1067,16 @@ impl Adapter<HttpConnector, Body> {
         // Block external traffic to the SnapStart hook paths. These routes are
         // control-plane operations driven only by the adapter's own hook calls
         // (which target `domain` directly and never reach this function).
-        let is_hook_path = |configured: &Option<String>| configured.as_deref().is_some_and(|p| p == path);
-        if is_hook_path(&self.snapstart_before_checkpoint_path) || is_hook_path(&self.snapstart_after_restore_path) {
+        //
+        // The match is strict and fail-closed: it canonicalizes the request path
+        // (percent-decode, collapse `//`/`.`/`..`, case-fold) so that every
+        // spelling the downstream app router would resolve to the hook route is
+        // blocked — not just the exact configured string — and undecidable inputs
+        // (malformed escapes, control bytes) are rejected too. See
+        // `matches_hook_path`.
+        if matches_hook_path(&self.snapstart_before_checkpoint_path, path)
+            || matches_hook_path(&self.snapstart_after_restore_path, path)
+        {
             tracing::warn!(path = %path, "rejecting external request to SnapStart hook path");
             return Ok(Response::builder()
                 .status(StatusCode::FORBIDDEN)
@@ -1702,5 +1809,218 @@ mod tests {
         let now_ptr = Arc::as_ptr(adapter.client()) as *const ();
         assert_ne!(now_ptr, base_ptr);
         assert_eq!(now_ptr, fresh_ptr);
+    }
+
+    // ---------------------------------------------------------------------
+    // Strict fail-closed SnapStart hook-path guard
+    // ---------------------------------------------------------------------
+
+    /// Build an ALB request for an arbitrary method + raw path.
+    fn alb_request(method: Method, raw_path: &str) -> Request {
+        let alb_req = lambda_http::request::LambdaRequest::Alb({
+            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
+            req.http_method = method;
+            req.path = Some(raw_path.into());
+            req
+        });
+        let mut request = Request::from(alb_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+        request
+    }
+
+    /// The guard must block the ENTIRE equivalence class of spellings that the
+    /// downstream app router would resolve to the configured hook route — not just
+    /// the exact configured string. Each of these must yield 403 and never reach
+    /// the app.
+    #[tokio::test]
+    async fn test_hook_guard_blocks_equivalence_class() {
+        let blocked = [
+            "/snapstart/after",        // canonical
+            "snapstart/after",         // missing leading slash (set_path still routes it)
+            "/snapstart/after/",       // trailing slash
+            "//snapstart//after",      // duplicate empty segments
+            "/snapstart/./after",      // dot segment
+            "/foo/../snapstart/after", // parent segment resolves onto the hook
+            "/snapstart/%61fter",      // percent-encoded 'a'
+            "/snapstart/%2561fter",    // double-encoded 'a'
+            "/SnapStart/After",        // case variance
+            "/snapstart/%2fafter",     // encoded slash: ambiguous -> reject (fail closed)
+        ];
+
+        for raw in blocked {
+            let app_server = MockServer::start();
+            // Match ANY path; if the guard fails open, this proves the app was hit.
+            let hook = app_server.mock(|when, then| {
+                when.any_request();
+                then.status(200).body("should not be reached for guarded paths");
+            });
+            let options = AdapterOptions {
+                host: app_server.host(),
+                port: app_server.port().to_string(),
+                readiness_check_port: app_server.port().to_string(),
+                readiness_check_path: "/".to_string(),
+                snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+                ..Default::default()
+            };
+            let adapter = Adapter::new(&options).expect("Failed to create adapter");
+            let response = adapter
+                .fetch_response(alb_request(Method::POST, raw))
+                .await
+                .expect("guard returns Ok response");
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "path {raw:?} must be blocked (403) by the strict guard"
+            );
+            hook.assert_calls(0);
+        }
+    }
+
+    /// The guard must NOT collapse into "block everything": a genuinely distinct
+    /// route that merely shares a prefix with the hook path is proxied normally.
+    #[tokio::test]
+    async fn test_hook_guard_allows_distinct_route() {
+        let allowed = ["/snapstart/after-report", "/snapstart", "/snapstart/afterx", "/hello"];
+        for raw in allowed {
+            let app_server = MockServer::start();
+            let route = app_server.mock(|when, then| {
+                when.path(raw);
+                then.status(200).body("OK");
+            });
+            let options = AdapterOptions {
+                host: app_server.host(),
+                port: app_server.port().to_string(),
+                readiness_check_port: app_server.port().to_string(),
+                readiness_check_path: "/".to_string(),
+                snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+                ..Default::default()
+            };
+            let adapter = Adapter::new(&options).expect("Failed to create adapter");
+            let response = adapter
+                .fetch_response(alb_request(Method::GET, raw))
+                .await
+                .expect("request failed");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "distinct route {raw:?} must NOT be blocked"
+            );
+            route.assert();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Base-path strip: single occurrence, segment-aware
+    // ---------------------------------------------------------------------
+
+    /// `/api/api/order` with base_path `/api` must strip exactly ONE occurrence
+    /// (-> `/api/order`), and a partial-segment prefix like `/apiorder` must not be
+    /// stripped at all.
+    #[tokio::test]
+    async fn test_base_path_strip_single_and_segment_aware() {
+        // (base_path, request_path, path the app should receive)
+        let cases = [
+            ("/api", "/api/api/order", "/api/order"), // strip once, not repeatedly
+            ("/api", "/apiorder", "/apiorder"),       // partial segment: not stripped
+            ("/api", "/api/order", "/order"),         // normal single strip
+            ("/api", "/api", "/"),                    // exact base path -> root
+            ("/api", "/other", "/other"),             // no prefix: untouched
+        ];
+
+        for (base, req_path, expected) in cases {
+            let app_server = MockServer::start();
+            let route = app_server.mock(|when, then| {
+                when.path(expected);
+                then.status(200).body("OK");
+            });
+            let options = AdapterOptions {
+                host: app_server.host(),
+                port: app_server.port().to_string(),
+                readiness_check_port: app_server.port().to_string(),
+                readiness_check_path: "/".to_string(),
+                base_path: Some(base.to_string()),
+                ..Default::default()
+            };
+            let adapter = Adapter::new(&options).expect("Failed to create adapter");
+            let response = adapter
+                .fetch_response(alb_request(Method::GET, req_path))
+                .await
+                .unwrap_or_else(|e| panic!("request for base={base} path={req_path} failed: {e}"));
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "base={base} req={req_path} should proxy to {expected}"
+            );
+            route.assert();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Canonicalization helper unit tests (pin the contract directly)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_percent_decode_once() {
+        assert_eq!(
+            percent_decode_once("/snapstart/%61fter").as_deref(),
+            Some("/snapstart/after")
+        );
+        assert_eq!(percent_decode_once("/a%2fb").as_deref(), Some("/a/b")); // %2f -> '/'
+        assert_eq!(percent_decode_once("plain").as_deref(), Some("plain"));
+        // Malformed escapes -> None.
+        assert_eq!(percent_decode_once("/a%"), None);
+        assert_eq!(percent_decode_once("/a%2"), None);
+        assert_eq!(percent_decode_once("/a%zz"), None);
+    }
+
+    #[test]
+    fn test_canonicalize_hook_path_equivalence() {
+        let want = canonicalize_hook_path("/snapstart/after").unwrap();
+        for spelling in [
+            "snapstart/after",
+            "/snapstart/after/",
+            "//snapstart//after",
+            "/snapstart/./after",
+            "/foo/../snapstart/after",
+            "/snapstart/%61fter",
+            "/snapstart/%2561fter",
+            "/SnapStart/After",
+            "/snapstart/%2fafter", // encoded slash decodes to a real slash
+        ] {
+            assert_eq!(
+                canonicalize_hook_path(spelling).as_ref(),
+                Some(&want),
+                "{spelling:?} should canonicalize onto the hook route"
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_hook_path_distinct_and_ambiguous() {
+        let hook = canonicalize_hook_path("/snapstart/after").unwrap();
+        // Distinct routes must NOT canonicalize onto the hook.
+        for distinct in [
+            "/snapstart/after-report",
+            "/snapstart",
+            "/snapstart/afterx",
+            "/hello",
+            "/foo/%2fbar",
+        ] {
+            assert_ne!(canonicalize_hook_path(distinct).as_ref(), Some(&hook), "{distinct:?}");
+        }
+        // Undecidable inputs -> None (caller fails closed).
+        assert_eq!(canonicalize_hook_path("/snapstart/%2"), None);
+        assert_eq!(canonicalize_hook_path("/snapstart/af\u{0}ter"), None);
+    }
+
+    #[test]
+    fn test_matches_hook_path_fail_closed() {
+        let cfg = Some("/snapstart/after".to_string());
+        assert!(matches_hook_path(&cfg, "/SnapStart/After/"));
+        assert!(!matches_hook_path(&cfg, "/snapstart/after-report"));
+        assert!(!matches_hook_path(&None, "/snapstart/after")); // no hook configured
+                                                                // Undecidable request path is treated as a hit when a hook is configured.
+        assert!(matches_hook_path(&cfg, "/snapstart/%2"));
+        assert!(!matches_hook_path(&None, "/snapstart/%2")); // ...but not when none is configured
     }
 }
