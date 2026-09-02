@@ -384,7 +384,8 @@ pub struct AdapterOptions {
     /// to report ready before giving up. Applied to both the initial (cold-start)
     /// readiness check and the post-SnapStart-restore readiness check.
     ///
-    /// Configurable via `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (whole seconds).
+    /// Configurable via `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (fractional
+    /// seconds allowed, e.g. `0.5`).
     /// `None` (the default) means **unbounded**: the adapter waits indefinitely for
     /// the app to become ready, preserving the historical behavior. Setting it bounds
     /// both checks; on the restore check a timeout fails the restore.
@@ -772,13 +773,16 @@ fn pool_idle_timeout_from_env() -> Duration {
 
 /// Reads the readiness-check timeout from
 /// [`ENV_READINESS_CHECK_TIMEOUT_SECONDS`] (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
-/// Returns `None` when unset or unparseable, meaning the readiness wait is
-/// unbounded (historical behavior).
+/// Accepts fractional seconds (e.g. `0.5`). Returns `None` when unset, unparseable,
+/// or not a finite non-negative number — meaning the readiness wait is unbounded
+/// (historical behavior). The finite/non-negative guard also avoids the panic
+/// `Duration::from_secs_f64` raises on NaN, infinity, or negatives.
 fn readiness_check_timeout_from_env() -> Option<Duration> {
     env::var(ENV_READINESS_CHECK_TIMEOUT_SECONDS)
         .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|secs| secs.is_finite() && *secs >= 0.0)
+        .map(Duration::from_secs_f64)
 }
 
 impl Adapter<HttpConnector, Body> {
@@ -1423,13 +1427,23 @@ mod tests {
             Some(Duration::from_secs(45))
         );
 
+        // Fractional seconds are accepted.
+        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "0.5");
+        assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_millis(500)));
+
         // Surrounding whitespace tolerated.
         std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "  20  ");
         assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_secs(20)));
 
-        // Unparseable -> None (unbounded), never a surprise bound.
-        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "nope");
-        assert_eq!(readiness_check_timeout_from_env(), None);
+        // Unparseable / non-finite / negative -> None (unbounded), never a panic.
+        for bad in ["nope", "-1", "NaN", "inf"] {
+            std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, bad);
+            assert_eq!(
+                readiness_check_timeout_from_env(),
+                None,
+                "value {bad:?} should be rejected"
+            );
+        }
 
         std::env::remove_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS);
     }

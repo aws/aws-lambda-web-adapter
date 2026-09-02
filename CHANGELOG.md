@@ -17,8 +17,9 @@
     dependency on `bytes` / `http-body-util`.
 - Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive (in
   whole seconds) of the adapter's HTTP connection to your app. Default: 4 seconds.
-- Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check (in
-  whole seconds), applied to both the initial cold-start readiness wait and the
+- Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check
+  (fractional seconds allowed, e.g. `0.5`), applied to both the initial cold-start
+  readiness wait and the
   post-SnapStart-restore readiness check. When unset (the default) the wait is
   **unbounded**, matching the previous behavior, so existing slow-cold-start apps
   are unaffected unless they opt in. The `async_init` initial-readiness path keeps

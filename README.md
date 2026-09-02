@@ -70,7 +70,7 @@ The readiness check port/path and traffic port can be configured using environme
 | AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH | inner-app path the adapter POSTs to before a SnapStart snapshot (drain resources) | None         |
 | AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH     | inner-app path the adapter POSTs to after a SnapStart restore (reconnect/reseed)  | None         |
 | AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS        | idle keep-alive (seconds) for the adapter's connection to your app                | "4"          |
-| AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS  | seconds to wait for the app to report ready (cold-start init and after a SnapStart restore) before giving up; unset = wait indefinitely. async_init keeps its own ~9.8s bound | None (unbounded) |
+| AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS  | seconds (fractional allowed, e.g. 0.5) to wait for the app to report ready (cold-start init and after a SnapStart restore) before giving up; unset = wait indefinitely. async_init keeps its own ~9.8s bound | None (unbounded) |
 
 > **Deprecation Notice:** The following non-namespaced environment variables are deprecated and will be removed in version 2.0:
 > `HOST`, `READINESS_CHECK_PORT`, `READINESS_CHECK_PATH`, `READINESS_CHECK_PROTOCOL`, `REMOVE_BASE_PATH`, `ASYNC_INIT`.
