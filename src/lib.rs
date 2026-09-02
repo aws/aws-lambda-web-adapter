@@ -556,7 +556,7 @@ fn percent_decode_once(input: &str) -> Option<String> {
 ///
 /// The guard must block *every* spelling that the downstream app router would
 /// resolve to the configured hook route, so this over-approximates: it
-/// percent-decodes (repeatedly, to collapse double-encoding), splits on `/`,
+/// percent-decodes (a single pass, matching the router), splits on `/`,
 /// drops empty segments (collapsing `//`, leading/trailing slashes), resolves
 /// `.`/`..`, and lowercases each segment.
 ///
@@ -570,16 +570,16 @@ fn percent_decode_once(input: &str) -> Option<String> {
 /// non-UTF-8 after decoding, or a control/null byte). The caller treats `None`
 /// as "reject" (fail closed).
 fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
-    // Repeatedly percent-decode until stable, so `%2561` -> `%61` -> `a` and
-    // `%2f` -> `/`. A malformed escape or non-UTF-8 result yields None (reject).
-    let mut current = path.to_string();
-    for _ in 0..8 {
-        match percent_decode_once(&current) {
-            Some(decoded) if decoded == current => break,
-            Some(decoded) => current = decoded,
-            None => return None, // malformed escape -> ambiguous -> reject
-        }
-    }
+    // Percent-decode a SINGLE pass, mirroring what the downstream app router
+    // does. A router decodes exactly once, so `/snapstart/%61fter` reaches the
+    // app as `/snapstart/after` (and must be guarded), while `/snapstart/%2561fter`
+    // reaches it as the literal `/snapstart/%61fter` (a different route the app
+    // does NOT resolve to the hook). Decoding more than once would over-decode
+    // relative to the router — buying no extra protection while making a validly
+    // single-encoded path like `/reports/100%25` (i.e. `/reports/100%`) look
+    // undecidable and get a false 403. A malformed escape or non-UTF-8 result
+    // still yields None (reject).
+    let current = percent_decode_once(path)?;
     // Reject any control/null byte on the hook-adjacent path.
     if current.bytes().any(|b| b < 0x20 || b == 0x7F) {
         return None;
@@ -1924,7 +1924,6 @@ mod tests {
             "/snapstart/./after",      // dot segment
             "/foo/../snapstart/after", // parent segment resolves onto the hook
             "/snapstart/%61fter",      // percent-encoded 'a'
-            "/snapstart/%2561fter",    // double-encoded 'a'
             "/SnapStart/After",        // case variance
             "/snapstart/%2fafter",     // encoded slash: ambiguous -> reject (fail closed)
         ];
@@ -2068,7 +2067,6 @@ mod tests {
             "/snapstart/./after",
             "/foo/../snapstart/after",
             "/snapstart/%61fter",
-            "/snapstart/%2561fter",
             "/SnapStart/After",
             "/snapstart/%2fafter", // encoded slash decodes to a real slash
         ] {
@@ -2090,12 +2088,36 @@ mod tests {
             "/snapstart/afterx",
             "/hello",
             "/foo/%2fbar",
+            // Single-pass decode: `%2561` decodes ONCE to the literal `%61fter`,
+            // which the app router does NOT resolve to `/snapstart/after`.
+            "/snapstart/%2561fter",
         ] {
             assert_ne!(canonicalize_hook_path(distinct).as_ref(), Some(&hook), "{distinct:?}");
         }
+        // A validly single-encoded literal percent (`%25` -> `%`) is DECIDABLE and
+        // must not fall into the fail-closed branch (regression: decode-until-stable
+        // used to 403 `/reports/100%25`). It canonicalizes to a concrete route.
+        assert_eq!(
+            canonicalize_hook_path("/reports/100%25"),
+            Some(vec!["reports".to_string(), "100%".to_string()]),
+        );
         // Undecidable inputs -> None (caller fails closed).
         assert_eq!(canonicalize_hook_path("/snapstart/%2"), None);
         assert_eq!(canonicalize_hook_path("/snapstart/af\u{0}ter"), None);
+    }
+
+    /// Regression for the single-pass fix: with a hook that shares a first
+    /// segment, a validly single-encoded request under that segment must NOT be
+    /// blocked (bot finding: `/reports/100%25` vs hook `/reports/snapshot`).
+    #[test]
+    fn test_matches_hook_path_valid_encoded_percent_not_blocked() {
+        let cfg = Some("/reports/snapshot".to_string());
+        assert!(
+            !matches_hook_path(&cfg, "/reports/100%25"),
+            "/reports/100%25 must not 403"
+        );
+        // The genuine single-encoded hook spelling is still blocked.
+        assert!(matches_hook_path(&cfg, "/reports/%73napshot"));
     }
 
     #[test]
