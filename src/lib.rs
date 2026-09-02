@@ -102,19 +102,25 @@ const ENV_LAMBDA_RUNTIME_API: &str = "AWS_LAMBDA_RUNTIME_API";
 // (Some(None)).
 static ORIGINAL_LAMBDA_RUNTIME_API: OnceLock<Option<String>> = OnceLock::new();
 
-use bytes::Bytes;
 use http::{
     header::{HeaderName, HeaderValue},
     Method, StatusCode,
 };
 use http_body::Body as HttpBody;
-use http_body_util::{combinators::BoxBody, BodyExt, Empty};
+use http_body_util::{BodyExt, Empty};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use lambda_http::request::RequestContext;
 pub use lambda_http::tracing;
 use lambda_http::Body;
 pub use lambda_http::Error;
+
+// Re-export the body types that appear in the public `Service::Response`
+// (`Response<BoxBody<Bytes, Error>>`), so downstream consumers driving the
+// `Adapter` as a `tower::Service` can name that type without taking their own
+// direct dependency on `bytes` / `http-body-util`.
+pub use bytes::Bytes;
+pub use http_body_util::combinators::BoxBody;
 use lambda_http::{Request, RequestExt, Response};
 use std::borrow::Cow;
 use std::fmt::Debug;

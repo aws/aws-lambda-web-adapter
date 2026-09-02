@@ -9,6 +9,12 @@
   60-second timeout. After restore the adapter refreshes its own HTTP client and
   re-runs the readiness check (bounded by 10 seconds) before admitting traffic, and
   it rejects external traffic to the hook paths with 403.
+  - Note: to let the guard return a synthetic 403 alongside proxied responses, the
+    `tower::Service` impl's `Response` is now `Response<BoxBody<Bytes, Error>>`
+    (previously `Response<Incoming>`). This only affects code that drives the
+    `Adapter` as a library `Service` rather than via `Adapter::run()`; the crate
+    re-exports `Bytes` and `BoxBody` so that type can be named without a direct
+    dependency on `bytes` / `http-body-util`.
 
 ---
 
