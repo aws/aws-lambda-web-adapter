@@ -1150,16 +1150,34 @@ impl Adapter<HttpConnector, Body> {
         // control-plane operations driven only by the adapter's own hook calls
         // (which target `domain` directly and never reach this function).
         //
-        // The match is strict and fail-closed: it canonicalizes the request path
+        // Build the outbound app URL FIRST, then run the guard against the exact
+        // path that will be sent (`app_url.path()`). `Url::set_path` applies the
+        // WHATWG normalization the request actually carries — e.g. for the `http`
+        // scheme it rewrites `\` to `/` and resolves `.`/`..` — so guarding on the
+        // raw event path could diverge from what the app receives (a `\` spelling
+        // would sail past a raw-path guard yet reach the hook route). Guarding on
+        // `app_url.path()` makes the guard structurally incapable of that
+        // divergence; `matches_hook_path` still layers percent-decode / case-fold /
+        // empty-segment collapse on top, for the spellings the app router (not
+        // `Url`) resolves.
+        let mut app_url = self.domain.clone();
+        app_url.set_path(path);
+
+        // Block external traffic to the SnapStart hook paths. These routes are
+        // control-plane operations driven only by the adapter's own hook calls
+        // (which target `domain` directly and never reach this function).
+        //
+        // The match is strict and fail-closed: it canonicalizes the outbound path
         // (percent-decode, collapse `//`/`.`/`..`, case-fold) so that every
         // spelling the downstream app router would resolve to the hook route is
         // blocked — not just the exact configured string — and undecidable inputs
         // (malformed escapes, control bytes) are rejected too. See
         // `matches_hook_path`.
-        if matches_hook_path(&self.snapstart_before_checkpoint_path, path)
-            || matches_hook_path(&self.snapstart_after_restore_path, path)
+        let outbound_path = app_url.path();
+        if matches_hook_path(&self.snapstart_before_checkpoint_path, outbound_path)
+            || matches_hook_path(&self.snapstart_after_restore_path, outbound_path)
         {
-            tracing::warn!(path = %path, "rejecting external request to SnapStart hook path");
+            tracing::warn!(path = %outbound_path, "rejecting external request to SnapStart hook path");
             return Ok(Response::builder()
                 .status(StatusCode::FORBIDDEN)
                 .body(Empty::<Bytes>::new().map_err(Error::from).boxed())?);
@@ -1197,8 +1215,7 @@ impl Adapter<HttpConnector, Body> {
             }
         }
 
-        let mut app_url = self.domain.clone();
-        app_url.set_path(path);
+        // `app_url` was built (path set + hook guard) before the header work above.
         app_url.set_query(parts.uri.query().filter(|q| !q.is_empty()));
 
         tracing::debug!(app_url = %app_url, req_headers = ?req_headers, "sending request to app server");
@@ -1926,6 +1943,7 @@ mod tests {
             "/snapstart/%61fter",      // percent-encoded 'a'
             "/SnapStart/After",        // case variance
             "/snapstart/%2fafter",     // encoded slash: ambiguous -> reject (fail closed)
+            "/snapstart\\after",       // backslash: Url::set_path normalizes it to '/'
         ];
 
         for raw in blocked {
