@@ -615,6 +615,15 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
     }
     let mut segments: Vec<String> = Vec::new();
     for seg in current.split('/') {
+        // Drop matrix / path parameters (everything from the first `;` in a
+        // segment). Several supported frameworks strip these before routing —
+        // Spring MVC's UrlPathHelper defaults to removeSemicolonContent=true, and
+        // servlet containers strip `;jsessionid` — so `/snapstart/after;x=1`
+        // resolves to `/snapstart/after`. The guard must block that spelling too;
+        // stripping here (before empty/`.`/`..` classification) keeps the guard's
+        // equivalence class aligned with the app router. This runs on both sides
+        // via `hook_target`, so it stays symmetric.
+        let seg = seg.split(';').next().unwrap_or(seg);
         match seg {
             "" | "." => continue, // collapse empty segments and `.`
             ".." => {
@@ -2138,16 +2147,19 @@ mod tests {
     #[tokio::test]
     async fn test_hook_guard_blocks_equivalence_class() {
         let blocked = [
-            "/snapstart/after",        // canonical
-            "snapstart/after",         // missing leading slash (set_path still routes it)
-            "/snapstart/after/",       // trailing slash
-            "//snapstart//after",      // duplicate empty segments
-            "/snapstart/./after",      // dot segment
-            "/foo/../snapstart/after", // parent segment resolves onto the hook
-            "/snapstart/%61fter",      // percent-encoded 'a'
-            "/SnapStart/After",        // case variance
-            "/snapstart/%2fafter",     // encoded slash decodes to '/' -> matches hook route
-            "/snapstart\\after",       // backslash: Url::set_path normalizes it to '/'
+            "/snapstart/after",                // canonical
+            "snapstart/after",                 // missing leading slash (set_path still routes it)
+            "/snapstart/after/",               // trailing slash
+            "//snapstart//after",              // duplicate empty segments
+            "/snapstart/./after",              // dot segment
+            "/foo/../snapstart/after",         // parent segment resolves onto the hook
+            "/snapstart/%61fter",              // percent-encoded 'a'
+            "/SnapStart/After",                // case variance
+            "/snapstart/%2fafter",             // encoded slash decodes to '/' -> matches hook route
+            "/snapstart\\after",               // backslash: Url::set_path normalizes it to '/'
+            "/snapstart/after;x=1",            // matrix param: stripped by Spring MVC / servlet routing
+            "/snapstart/after;jsessionid=abc", // servlet session param variant
+            "/snapstart;a=b/after",            // matrix param on a non-terminal segment
         ];
 
         for raw in blocked {

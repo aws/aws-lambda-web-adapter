@@ -37,6 +37,10 @@
   a configured value that `set_path` rewrites (e.g. `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/snapstart\after`,
   which the app serves as `/snapstart/after`) left the actual route externally
   reachable. Both sides are now derived from `set_path`, closing the divergence.
+  The canonicalization also strips matrix / path parameters (everything from the
+  first `;` in a segment), so spellings like `/snapstart/after;x=1` or
+  `;jsessionid=…` — which Spring MVC and servlet containers drop before routing —
+  are blocked too.
 - Fix `AWS_LWA_REMOVE_BASE_PATH` stripping to remove exactly one leading occurrence
   on a path-segment boundary. Previously it used `trim_start_matches`, which stripped
   the prefix repeatedly and byte-wise: with `AWS_LWA_REMOVE_BASE_PATH=/api`,
