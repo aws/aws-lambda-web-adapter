@@ -88,6 +88,8 @@ const ENV_POOL_IDLE_TIMEOUT_SECONDS: &str = "AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS";
 /// used when [`ENV_POOL_IDLE_TIMEOUT_SECONDS`] is unset or unparseable.
 const DEFAULT_POOL_IDLE_TIMEOUT_SECONDS: u64 = 4;
 
+const ENV_READINESS_CHECK_TIMEOUT_SECONDS: &str = "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS";
+
 // Deprecated environment variable names (without prefix)
 const ENV_PORT_DEPRECATED: &str = "PORT";
 const ENV_HOST_DEPRECATED: &str = "HOST";
@@ -377,6 +379,19 @@ pub struct AdapterOptions {
     /// Configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` (whole seconds).
     /// Default: 4 seconds ([`DEFAULT_POOL_IDLE_TIMEOUT_SECONDS`]).
     pub pool_idle_timeout: Duration,
+
+    /// Bound on the readiness check: how long the adapter waits for the inner app
+    /// to report ready before giving up. Applied to both the initial (cold-start)
+    /// readiness check and the post-SnapStart-restore readiness check.
+    ///
+    /// Configurable via `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (whole seconds).
+    /// `None` (the default) means **unbounded**: the adapter waits indefinitely for
+    /// the app to become ready, preserving the historical behavior. Setting it bounds
+    /// both checks; on the restore check a timeout fails the restore.
+    ///
+    /// Note: the `async_init` initial-readiness path retains its own fixed ~9.8s
+    /// bound and is unaffected by this option.
+    pub readiness_check_timeout: Option<Duration>,
 }
 
 /// Helper to get env var with deprecation warning for old name
@@ -470,6 +485,7 @@ impl Default for AdapterOptions {
                 .ok()
                 .filter(|p| !p.is_empty()),
             pool_idle_timeout: pool_idle_timeout_from_env(),
+            readiness_check_timeout: readiness_check_timeout_from_env(),
         }
     }
 }
@@ -720,6 +736,7 @@ pub struct Adapter<C, B> {
     snapstart_before_checkpoint_path: Option<String>,
     snapstart_after_restore_path: Option<String>,
     pool_idle_timeout: Duration,
+    readiness_check_timeout: Option<Duration>,
 }
 
 /// Builds the hyper client used to talk to the inner web application.
@@ -735,15 +752,33 @@ fn build_client(idle_timeout: Duration) -> Client<HttpConnector, Body> {
     builder.build(HttpConnector::new())
 }
 
+/// Reads a whole-seconds `Duration` from environment variable `name`, falling
+/// back to `default_secs` when the var is unset or does not parse as `u64`.
+/// Surrounding whitespace is tolerated.
+fn duration_secs_from_env(name: &str, default_secs: u64) -> Duration {
+    let secs = env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default_secs);
+    Duration::from_secs(secs)
+}
+
 /// Reads the inner-app connection pool idle timeout from
 /// [`ENV_POOL_IDLE_TIMEOUT_SECONDS`] (`AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`).
 /// Falls back to [`DEFAULT_POOL_IDLE_TIMEOUT_SECONDS`] when unset or unparseable.
 fn pool_idle_timeout_from_env() -> Duration {
-    let secs = env::var(ENV_POOL_IDLE_TIMEOUT_SECONDS)
+    duration_secs_from_env(ENV_POOL_IDLE_TIMEOUT_SECONDS, DEFAULT_POOL_IDLE_TIMEOUT_SECONDS)
+}
+
+/// Reads the readiness-check timeout from
+/// [`ENV_READINESS_CHECK_TIMEOUT_SECONDS`] (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
+/// Returns `None` when unset or unparseable, meaning the readiness wait is
+/// unbounded (historical behavior).
+fn readiness_check_timeout_from_env() -> Option<Duration> {
+    env::var(ENV_READINESS_CHECK_TIMEOUT_SECONDS)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_POOL_IDLE_TIMEOUT_SECONDS);
-    Duration::from_secs(secs)
+        .map(Duration::from_secs)
 }
 
 impl Adapter<HttpConnector, Body> {
@@ -835,6 +870,7 @@ impl Adapter<HttpConnector, Body> {
             snapstart_before_checkpoint_path: options.snapstart_before_checkpoint_path.clone(),
             snapstart_after_restore_path: options.snapstart_after_restore_path.clone(),
             pool_idle_timeout: options.pool_idle_timeout,
+            readiness_check_timeout: options.readiness_check_timeout,
         })
     }
 
@@ -945,9 +981,15 @@ impl Adapter<HttpConnector, Body> {
     /// ```
     pub async fn check_init_health(&mut self) {
         let ready_at_init = if self.async_init {
+            // async_init keeps its own fixed bound, independent of
+            // readiness_check_timeout (see AdapterOptions::readiness_check_timeout).
             timeout(Duration::from_secs_f32(9.8), self.check_readiness())
                 .await
                 .unwrap_or_default()
+        } else if let Some(t) = self.readiness_check_timeout {
+            // Bound the sync-init readiness wait when configured; unset = unbounded
+            // (historical behavior), so an unset value never fails a slow cold start.
+            timeout(t, self.check_readiness()).await.unwrap_or_default()
         } else {
             self.check_readiness().await
         };
@@ -1017,6 +1059,7 @@ impl Adapter<HttpConnector, Body> {
             self.healthcheck_protocol,
             self.healthcheck_healthy_status.clone(),
             self.pool_idle_timeout,
+            self.readiness_check_timeout,
         ));
         match (self.compression, self.invoke_mode) {
             (true, LambdaInvokeMode::Buffered) => {
@@ -1361,6 +1404,34 @@ mod tests {
         assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(4));
 
         std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
+    }
+
+    // All cases share one test because they mutate the same process-global env
+    // var; separate tests would let the parallel runner clobber each other.
+    #[test]
+    fn test_readiness_check_timeout() {
+        // Unset -> None (unbounded), surfaced on AdapterOptions.
+        std::env::remove_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS);
+        assert_eq!(readiness_check_timeout_from_env(), None);
+        assert_eq!(AdapterOptions::default().readiness_check_timeout, None);
+
+        // Explicit value -> Some(secs), parsed and surfaced.
+        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "45");
+        assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_secs(45)));
+        assert_eq!(
+            AdapterOptions::default().readiness_check_timeout,
+            Some(Duration::from_secs(45))
+        );
+
+        // Surrounding whitespace tolerated.
+        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "  20  ");
+        assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_secs(20)));
+
+        // Unparseable -> None (unbounded), never a surprise bound.
+        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "nope");
+        assert_eq!(readiness_check_timeout_from_env(), None);
+
+        std::env::remove_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS);
     }
 
     #[tokio::test]

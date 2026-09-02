@@ -17,12 +17,6 @@ use crate::{build_client, readiness, Protocol};
 /// snapshot/restore lifecycle cannot stall indefinitely.
 const HOOK_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Maximum time the adapter waits for the inner app to report ready after
-/// restore (step 3). Tighter than [`HOOK_TIMEOUT`]: once the after-restore hook
-/// has run, the app should become ready almost immediately, so a long stall here
-/// indicates a failed restore rather than legitimate slow work.
-const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// A [`SnapStartResource`] that bridges the Lambda SnapStart lifecycle to the
 /// inner web application running behind the adapter.
 pub(crate) struct SnapStartHooks {
@@ -43,6 +37,10 @@ pub(crate) struct SnapStartHooks {
     /// Idle keep-alive used to rebuild the client after restore, so the
     /// post-restore client honors the same `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`.
     pool_idle_timeout: Duration,
+    /// Bound on the post-restore readiness check (step 3), from
+    /// `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`. `None` = unbounded (wait forever
+    /// for the app to become ready), preserving historical behavior.
+    readiness_timeout: Option<Duration>,
 }
 
 impl SnapStartHooks {
@@ -57,6 +55,7 @@ impl SnapStartHooks {
         healthcheck_protocol: Protocol,
         healthcheck_healthy_status: Vec<u16>,
         pool_idle_timeout: Duration,
+        readiness_timeout: Option<Duration>,
     ) -> Self {
         Self {
             restored_client,
@@ -68,6 +67,7 @@ impl SnapStartHooks {
             healthcheck_protocol,
             healthcheck_healthy_status,
             pool_idle_timeout,
+            readiness_timeout,
         }
     }
 
@@ -129,7 +129,12 @@ impl SnapStartResource for SnapStartHooks {
             }
 
             // 3. Confirm the app is serving again before traffic is admitted.
-            self.check_readiness_with_timeout(&fresh, READINESS_TIMEOUT).await?;
+            //    A configured timeout bounds the wait and fails the restore on
+            //    expiry; when unset the wait is unbounded (historical behavior).
+            match self.readiness_timeout {
+                Some(t) => self.check_readiness_with_timeout(&fresh, t).await?,
+                None => self.check_readiness_unbounded(&fresh).await?,
+            }
 
             Ok(())
         })
@@ -140,24 +145,14 @@ impl SnapStartHooks {
     /// Step 3 of [`after_restore`](SnapStartResource::after_restore): retry-until-ready
     /// over `client`, bounded by `readiness_timeout`. A timeout or an unready app is an
     /// error, which fails the restore (reported to `/restore/error`). Split out with an
-    /// explicit timeout so tests can exercise the failure path without waiting
-    /// [`READINESS_TIMEOUT`].
+    /// explicit timeout so tests can exercise the failure path without waiting a long
+    /// configured timeout (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
     async fn check_readiness_with_timeout(
         &self,
         client: &Client<HttpConnector, Body>,
         readiness_timeout: Duration,
     ) -> Result<(), Error> {
-        let ready = timeout(
-            readiness_timeout,
-            readiness::wait_until_ready(
-                client,
-                &self.healthcheck_url,
-                self.healthcheck_protocol,
-                &self.healthcheck_healthy_status,
-            ),
-        )
-        .await
-        .map_err(|_| {
+        let ready = timeout(readiness_timeout, self.wait_ready(client)).await.map_err(|_| {
             Error::from(format!(
                 "SnapStart after-restore readiness check timed out after {readiness_timeout:?}"
             ))
@@ -166,6 +161,27 @@ impl SnapStartHooks {
             return Err(Error::from("SnapStart after-restore readiness check failed"));
         }
         Ok(())
+    }
+
+    /// Unbounded variant of [`check_readiness_with_timeout`](Self::check_readiness_with_timeout):
+    /// waits indefinitely for the app to become ready. Used when
+    /// `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` is unset (historical behavior).
+    async fn check_readiness_unbounded(&self, client: &Client<HttpConnector, Body>) -> Result<(), Error> {
+        if !self.wait_ready(client).await {
+            return Err(Error::from("SnapStart after-restore readiness check failed"));
+        }
+        Ok(())
+    }
+
+    /// Shared readiness wait against the configured healthcheck endpoint.
+    async fn wait_ready(&self, client: &Client<HttpConnector, Body>) -> bool {
+        readiness::wait_until_ready(
+            client,
+            &self.healthcheck_url,
+            self.healthcheck_protocol,
+            &self.healthcheck_healthy_status,
+        )
+        .await
     }
 }
 
@@ -196,6 +212,7 @@ mod tests {
             Protocol::Http,
             (100..500).collect(),
             Duration::from_secs(4),
+            Some(Duration::from_secs(10)),
         )
     }
 

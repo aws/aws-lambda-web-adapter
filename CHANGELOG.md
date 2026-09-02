@@ -7,14 +7,22 @@
   (before checkpoint) and `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` (after restore) —
   so it can drain and re-establish connections. Each hook call is bounded by a
   60-second timeout. After restore the adapter refreshes its own HTTP client and
-  re-runs the readiness check (bounded by 10 seconds) before admitting traffic, and
-  it rejects external traffic to the hook paths with 403.
+  re-runs the readiness check before admitting traffic, and it rejects external
+  traffic to the hook paths with 403.
   - Note: to let the guard return a synthetic 403 alongside proxied responses, the
     `tower::Service` impl's `Response` is now `Response<BoxBody<Bytes, Error>>`
     (previously `Response<Incoming>`). This only affects code that drives the
     `Adapter` as a library `Service` rather than via `Adapter::run()`; the crate
     re-exports `Bytes` and `BoxBody` so that type can be named without a direct
     dependency on `bytes` / `http-body-util`.
+- Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive (in
+  whole seconds) of the adapter's HTTP connection to your app. Default: 4 seconds.
+- Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check (in
+  whole seconds), applied to both the initial cold-start readiness wait and the
+  post-SnapStart-restore readiness check. When unset (the default) the wait is
+  **unbounded**, matching the previous behavior, so existing slow-cold-start apps
+  are unaffected unless they opt in. The `async_init` initial-readiness path keeps
+  its own fixed ~9.8s bound and is not affected by this variable.
 
 ### Bug Fixes
 
