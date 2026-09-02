@@ -135,7 +135,10 @@ async fn test_http_readiness_check() {
 
     // Initialize adapter and do readiness check
     let mut adapter = Adapter::new(&options).expect("Failed to create adapter");
-    adapter.check_init_health().await;
+    adapter
+        .check_init_health()
+        .await
+        .expect("init health check should succeed");
 
     // Assert app server's healthcheck endpoint got called
     healthcheck.assert();
@@ -1109,7 +1112,10 @@ async fn test_http_async_init_ready_at_init() {
     .expect("Failed to create adapter");
 
     // Perform init health check — app is already running so it should succeed
-    adapter.check_init_health().await;
+    adapter
+        .check_init_health()
+        .await
+        .expect("init health check should succeed");
 
     healthcheck.assert();
 
@@ -1142,7 +1148,10 @@ async fn test_http_tcp_readiness_check() {
     .expect("Failed to create adapter");
 
     // TCP readiness check should succeed since MockServer is listening
-    adapter.check_init_health().await;
+    adapter
+        .check_init_health()
+        .await
+        .expect("init health check should succeed");
 
     // Now verify the adapter can still forward requests
     let hello = app_server.mock(|when, then| {

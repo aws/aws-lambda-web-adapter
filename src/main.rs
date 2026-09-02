@@ -30,7 +30,7 @@ async fn async_main() -> Result<(), Error> {
     // register the adapter as an extension
     adapter.register_default_extension();
     // check if the web application is ready
-    adapter.check_init_health().await;
+    adapter.check_init_health().await?;
     // start lambda runtime after the web application is ready
     adapter.run().await?;
 

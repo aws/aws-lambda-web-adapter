@@ -33,7 +33,7 @@
 //!         let mut adapter = Adapter::new(&options)?;
 //!         
 //!         adapter.register_default_extension();
-//!         adapter.check_init_health().await;
+//!         adapter.check_init_health().await?;
 //!         adapter.run().await
 //!     })
 //! }
@@ -714,7 +714,7 @@ fn matches_hook_path(configured: &Option<String>, request_path: &str) -> bool {
 /// let mut adapter = Adapter::new(&options)?;
 ///
 /// adapter.register_default_extension();
-/// adapter.check_init_health().await;
+/// adapter.check_init_health().await?;
 /// adapter.run().await
 /// # }
 /// ```
@@ -969,7 +969,17 @@ impl Adapter<HttpConnector, Body> {
     /// - Allow the application to continue booting in the background
     ///
     /// The first request will re-check readiness if the application wasn't ready
-    /// during initialization.
+    /// during initialization. The async path always returns `Ok`.
+    ///
+    /// # Synchronous Initialization
+    ///
+    /// Without `async_init`, this waits for the app to report ready before the
+    /// Lambda runtime starts serving. If `readiness_check_timeout`
+    /// (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`) is set and the app does not
+    /// become ready within it, this returns `Err`: init fails and no traffic is
+    /// served against an app that never came up. When the timeout is unset the
+    /// wait is unbounded and this returns `Ok` once the check completes
+    /// (historical behavior).
     ///
     /// # Examples
     ///
@@ -979,25 +989,38 @@ impl Adapter<HttpConnector, Body> {
     /// # async fn example() -> Result<(), lambda_web_adapter::Error> {
     /// let options = AdapterOptions::default();
     /// let mut adapter = Adapter::new(&options)?;
-    /// adapter.check_init_health().await;
+    /// adapter.check_init_health().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn check_init_health(&mut self) {
+    pub async fn check_init_health(&mut self) -> Result<(), Error> {
         let ready_at_init = if self.async_init {
             // async_init keeps its own fixed bound, independent of
             // readiness_check_timeout (see AdapterOptions::readiness_check_timeout).
+            // A timeout here is non-fatal: the app keeps booting and the first
+            // request re-checks readiness.
             timeout(Duration::from_secs_f32(9.8), self.check_readiness())
                 .await
                 .unwrap_or_default()
         } else if let Some(t) = self.readiness_check_timeout {
-            // Bound the sync-init readiness wait when configured; unset = unbounded
-            // (historical behavior), so an unset value never fails a slow cold start.
-            timeout(t, self.check_readiness()).await.unwrap_or_default()
+            // Bound the sync-init readiness wait when configured. On expiry, refuse
+            // to serve: fail init rather than admit traffic to an app that never
+            // reported ready — this is the point of configuring the bound.
+            match timeout(t, self.check_readiness()).await {
+                Ok(ready) => ready,
+                Err(_) => {
+                    return Err(Error::from(format!(
+                        "web application did not become ready within {t:?} \
+                         (AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS); failing initialization"
+                    )));
+                }
+            }
         } else {
+            // Unset: unbounded wait, non-fatal result (historical behavior).
             self.check_readiness().await
         };
         self.ready_at_init.store(ready_at_init, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Performs a single readiness check against the configured endpoint.
@@ -1510,6 +1533,36 @@ mod tests {
 
         // Assert app server's healthcheck endpoint got called
         healthcheck.assert();
+    }
+
+    #[tokio::test]
+    async fn test_check_init_health_fails_when_sync_init_readiness_timeout_expires() {
+        // App server that never reports ready (always 500) so the readiness
+        // retry loop runs until the configured timeout fires.
+        let app_server = MockServer::start();
+        app_server.mock(|when, then| {
+            when.method(GET).path("/healthcheck");
+            then.status(500).body("nope");
+        });
+
+        // Sync init (async_init defaults to false) with a short configured bound.
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/healthcheck".to_string(),
+            readiness_check_timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+
+        let mut adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // Refuse to serve: a configured timeout that expires fails initialization.
+        let result = adapter.check_init_health().await;
+        assert!(
+            result.is_err(),
+            "sync-init readiness timeout should fail init, got {result:?}"
+        );
     }
 
     #[tokio::test]

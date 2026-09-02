@@ -20,10 +20,13 @@
 - Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check
   (fractional seconds allowed, e.g. `0.5`), applied to both the initial cold-start
   readiness wait and the
-  post-SnapStart-restore readiness check. When unset (the default) the wait is
+  post-SnapStart-restore readiness check. When set and the app does not become
+  ready within it, the adapter **refuses to serve**: cold-start init fails (the
+  runtime never starts) and a restore fails, rather than admitting traffic to an
+  app that never reported ready. When unset (the default) the wait is
   **unbounded**, matching the previous behavior, so existing slow-cold-start apps
   are unaffected unless they opt in. The `async_init` initial-readiness path keeps
-  its own fixed ~9.8s bound and is not affected by this variable.
+  its own fixed ~9.8s bound (non-fatal) and is not affected by this variable.
 
 ### Bug Fixes
 
