@@ -4,12 +4,6 @@ This example shows how to use the Lambda Web Adapter's SnapStart hooks to drain 
 re-establish a connection pool around the snapshot/restore boundary, packaged as a
 **container image** (OCI) rather than a zip.
 
-> **Availability:** Lambda SnapStart for container images (OCI) is expected to launch
-> in early July. Until it is available in your account/Region, deploying this example
-> with `SnapStart: ApplyOn: PublishedVersions` on an `Image` package type will be
-> rejected. The application itself runs unchanged with or without SnapStart — the
-> hooks are simply not invoked when SnapStart is off.
-
 For the zip-packaged equivalent, see
 [fastapi-snapstart-zip](../fastapi-snapstart-zip).
 

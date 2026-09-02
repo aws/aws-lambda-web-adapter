@@ -26,7 +26,7 @@ Resources:
           AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH: /snapstart/before
           AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH: /snapstart/after
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30
       Events:
         ApiEvent:
           Type: HttpApi
