@@ -16,6 +16,18 @@
     re-exports `Bytes` and `BoxBody` so that type can be named without a direct
     dependency on `bytes` / `http-body-util`.
 
+### Bug Fixes
+
+- Fix `AWS_LWA_REMOVE_BASE_PATH` stripping to remove exactly one leading occurrence
+  on a path-segment boundary. Previously it used `trim_start_matches`, which stripped
+  the prefix repeatedly and byte-wise: with `AWS_LWA_REMOVE_BASE_PATH=/api`,
+  `/api/api/order` became `/order` (both copies removed) and `/apiorder` became
+  `/order` (a partial segment stripped). Now `/api/api/order` → `/api/order` and
+  `/apiorder` is passed through unchanged, and a configured trailing slash (`/api/`)
+  is normalized so it behaves like `/api`. **Upgrade note:** this changes the path
+  forwarded to your app for those inputs — deployments that relied on the old
+  repeated/partial stripping should verify their routes.
+
 ---
 
 ## v1.0.1 - 2026-05-28
