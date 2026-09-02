@@ -446,8 +446,12 @@ impl Default for AdapterOptions {
             error_status_codes: env::var(ENV_ERROR_STATUS_CODES)
                 .ok()
                 .map(|codes| parse_status_codes(&codes)),
-            snapstart_before_checkpoint_path: env::var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH).ok(),
-            snapstart_after_restore_path: env::var(ENV_SNAPSTART_AFTER_RESTORE_PATH).ok(),
+            snapstart_before_checkpoint_path: env::var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH)
+                .ok()
+                .filter(|p| !p.is_empty()),
+            snapstart_after_restore_path: env::var(ENV_SNAPSTART_AFTER_RESTORE_PATH)
+                .ok()
+                .filter(|p| !p.is_empty()),
         }
     }
 }
@@ -608,6 +612,14 @@ fn matches_hook_path(configured: &Option<String>, request_path: &str) -> bool {
     let Some(configured) = configured.as_deref() else {
         return false;
     };
+    // An empty or root-only configured hook path (e.g. "" or "/") would
+    // canonicalize to the empty segment list and 403 every request to `/`.
+    // A hook route must be a real sub-path, so treat these as "no hook".
+    // (Env parsing already drops empty values; this also covers a field set
+    // directly on the public `Adapter`.)
+    if configured.is_empty() || configured.trim_matches('/').is_empty() {
+        return false;
+    }
     // The configured path is operator-controlled. If it cannot be canonicalized
     // the guard cannot know the hook's canonical form, but the outbound hook
     // still serves the raw route — so guard the raw route rather than fail open.
@@ -638,34 +650,36 @@ fn matches_hook_path(configured: &Option<String>, request_path: &str) -> bool {
     }
 }
 
-/// For a request path that does not fully canonicalize, decode the portion
-/// before the first undecidable byte and test whether those leading segments
-/// are a prefix of `hook` (the hook's canonical segment list). Returns true when
-/// the undecidable path is plausibly the hook route, so the guard fails closed
-/// on it; false for clearly-unrelated routes.
+/// For a request path that does not fully canonicalize, decode the leading
+/// segments that DO canonicalize cleanly (those before the first segment
+/// containing an undecidable byte) and test whether that non-empty prefix is a
+/// prefix of `hook`. Returns true only when the undecidable path is plausibly
+/// the hook route (so the guard fails closed on it); false for clearly-unrelated
+/// routes, including a single-segment route whose only segment is undecidable
+/// (e.g. `/100%`), which carries no evidence of hook-adjacency.
 fn decodable_prefix_matches(request_path: &str, hook: &[String]) -> bool {
-    // Take the longest leading substring that canonicalizes cleanly, truncating
-    // at a SEGMENT boundary (the last `/` before the undecidable byte) so a
-    // partial segment is never compared against a whole hook segment.
-    let mut prefix = request_path;
-    let decoded = loop {
-        if let Some(segments) = canonicalize_hook_path(prefix) {
-            break segments;
+    // Split into segments and canonicalize each independently, stopping at the
+    // first segment that is itself undecidable. A leading `/`, empty segments,
+    // `.` and `..` are handled the same way `canonicalize_hook_path` does.
+    let mut decoded: Vec<String> = Vec::new();
+    for seg in request_path.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => {
+                decoded.pop();
+            }
+            s => match canonicalize_hook_path(s) {
+                // A clean single segment canonicalizes to exactly one element.
+                Some(mut segs) if segs.len() == 1 => decoded.push(segs.pop().unwrap()),
+                // Undecidable (or structurally surprising) segment: stop here.
+                _ => break,
+            },
         }
-        let bad = match prefix.rfind(['%', '\0']) {
-            Some(idx) => idx,
-            None => return true, // undecidable for another reason: fail closed
-        };
-        match prefix[..bad].rfind('/') {
-            Some(slash) if slash > 0 => prefix = &prefix[..slash],
-            // Undecidable byte sits in the first segment: no decodable prefix,
-            // and a hook is configured, so fail closed.
-            _ => return true,
-        }
-    };
-    // Fail closed if the decodable leading segments are a prefix of the hook
-    // route (an undecidable tail could complete it), OR already equal it.
-    decoded.len() <= hook.len() && hook[..decoded.len()] == decoded[..]
+    }
+    // An empty decodable prefix carries no evidence the path is the hook route,
+    // so do NOT block it. Otherwise block only when the decoded leading segments
+    // are a prefix of the hook route (an undecidable tail could complete it).
+    !decoded.is_empty() && decoded.len() <= hook.len() && hook[..decoded.len()] == decoded[..]
 }
 
 /// The Lambda Web Adapter.
@@ -2096,6 +2110,25 @@ mod tests {
         // because a hook is configured (bot finding: /reports/100%).
         assert!(!matches_hook_path(&cfg, "/reports/100%"));
         assert!(!matches_hook_path(&cfg, "/other/%2"));
+
+        // Single-segment undecidable route at the root carries no hook-adjacency
+        // evidence and must NOT be blocked (bot finding: /100%).
+        assert!(!matches_hook_path(&cfg, "/100%"));
+        assert!(!matches_hook_path(&cfg, "/%2"));
+    }
+
+    #[test]
+    fn test_matches_hook_path_empty_or_root_config_never_matches() {
+        // An empty or root-only configured hook path must never 403 the app root
+        // (bot finding: AWS_LWA_..._PATH="" blocks "/").
+        for cfg in ["", "/", "//", "///"] {
+            let c = Some(cfg.to_string());
+            assert!(!matches_hook_path(&c, "/"), "config {cfg:?} must not block /");
+            assert!(
+                !matches_hook_path(&c, "/anything"),
+                "config {cfg:?} must not block /anything"
+            );
+        }
     }
 
     #[test]
