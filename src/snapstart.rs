@@ -40,6 +40,9 @@ pub(crate) struct SnapStartHooks {
     healthcheck_url: Url,
     healthcheck_protocol: Protocol,
     healthcheck_healthy_status: Vec<u16>,
+    /// Idle keep-alive used to rebuild the client after restore, so the
+    /// post-restore client honors the same `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`.
+    pool_idle_timeout: Duration,
 }
 
 impl SnapStartHooks {
@@ -53,6 +56,7 @@ impl SnapStartHooks {
         healthcheck_url: Url,
         healthcheck_protocol: Protocol,
         healthcheck_healthy_status: Vec<u16>,
+        pool_idle_timeout: Duration,
     ) -> Self {
         Self {
             restored_client,
@@ -63,6 +67,7 @@ impl SnapStartHooks {
             healthcheck_url,
             healthcheck_protocol,
             healthcheck_healthy_status,
+            pool_idle_timeout,
         }
     }
 
@@ -114,7 +119,7 @@ impl SnapStartResource for SnapStartHooks {
             // 1. Publish a fresh client FIRST so the hook POST below (and all
             //    subsequent invocations) use post-restore connections rather
             //    than stale pre-snapshot ones. Ignore "already set".
-            let fresh = Arc::new(build_client());
+            let fresh = Arc::new(build_client(self.pool_idle_timeout));
             let _ = self.restored_client.set(fresh.clone());
 
             // 2. Notify the app over the fresh client. Failure fails the restore;
@@ -183,13 +188,14 @@ mod tests {
             .unwrap();
         SnapStartHooks::new(
             Arc::new(OnceLock::new()),
-            Arc::new(build_client()),
+            Arc::new(build_client(Duration::from_secs(4))),
             domain,
             before.map(str::to_string),
             after.map(str::to_string),
             healthcheck_url,
             Protocol::Http,
             (100..500).collect(),
+            Duration::from_secs(4),
         )
     }
 
@@ -272,7 +278,7 @@ mod tests {
             then.status(200).delay(Duration::from_secs(2));
         });
         let domain: Url = format!("http://{}:{}", server.host(), server.port()).parse().unwrap();
-        let client = build_client();
+        let client = build_client(Duration::from_secs(4));
 
         let result =
             SnapStartHooks::post_hook_with_timeout(&client, &domain, "/slow", Duration::from_millis(100)).await;
@@ -312,7 +318,7 @@ mod tests {
             then.status(503);
         });
         let h = hooks_with_health(&server, None, None, "/never");
-        let client = build_client();
+        let client = build_client(Duration::from_secs(4));
 
         let result = h
             .check_readiness_with_timeout(&client, Duration::from_millis(100))

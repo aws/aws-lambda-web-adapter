@@ -371,6 +371,12 @@ pub struct AdapterOptions {
     /// When set, the adapter notifies the app so it can reconnect / reseed.
     /// Default: `None` (phase skipped).
     pub snapstart_after_restore_path: Option<String>,
+
+    /// Idle-connection keep-alive for the adapter's HTTP client to the inner app.
+    ///
+    /// Configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` (whole seconds).
+    /// Default: 4 seconds ([`DEFAULT_POOL_IDLE_TIMEOUT_SECONDS`]).
+    pub pool_idle_timeout: Duration,
 }
 
 /// Helper to get env var with deprecation warning for old name
@@ -463,6 +469,7 @@ impl Default for AdapterOptions {
             snapstart_after_restore_path: env::var(ENV_SNAPSTART_AFTER_RESTORE_PATH)
                 .ok()
                 .filter(|p| !p.is_empty()),
+            pool_idle_timeout: pool_idle_timeout_from_env(),
         }
     }
 }
@@ -712,24 +719,26 @@ pub struct Adapter<C, B> {
     error_status_codes: Option<Vec<u16>>,
     snapstart_before_checkpoint_path: Option<String>,
     snapstart_after_restore_path: Option<String>,
+    pool_idle_timeout: Duration,
 }
 
 /// Builds the hyper client used to talk to the inner web application.
 ///
 /// Shared by [`Adapter::new`] and the SnapStart after-restore hook so the
-/// post-restore client is built identically to the original. The idle-connection
-/// keep-alive is configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`
-/// (default 4 seconds); see [`pool_idle_timeout`].
-fn build_client() -> Client<HttpConnector, Body> {
+/// post-restore client is built identically to the original. `idle_timeout` is
+/// the idle-connection keep-alive, resolved from
+/// [`AdapterOptions::pool_idle_timeout`] (env `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`,
+/// default 4 seconds).
+fn build_client(idle_timeout: Duration) -> Client<HttpConnector, Body> {
     let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
-    builder.pool_idle_timeout(pool_idle_timeout());
+    builder.pool_idle_timeout(idle_timeout);
     builder.build(HttpConnector::new())
 }
 
-/// Idle-connection keep-alive for the inner-app HTTP client, configurable via
+/// Reads the inner-app connection pool idle timeout from
 /// [`ENV_POOL_IDLE_TIMEOUT_SECONDS`] (`AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`).
 /// Falls back to [`DEFAULT_POOL_IDLE_TIMEOUT_SECONDS`] when unset or unparseable.
-fn pool_idle_timeout() -> Duration {
+fn pool_idle_timeout_from_env() -> Duration {
     let secs = env::var(ENV_POOL_IDLE_TIMEOUT_SECONDS)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -766,7 +775,7 @@ impl Adapter<HttpConnector, Body> {
     /// let adapter = Adapter::new(&options).expect("Failed to create adapter");
     /// ```
     pub fn new(options: &AdapterOptions) -> Result<Adapter<HttpConnector, Body>, Error> {
-        let client = build_client();
+        let client = build_client(options.pool_idle_timeout);
 
         let schema = "http";
 
@@ -825,6 +834,7 @@ impl Adapter<HttpConnector, Body> {
             error_status_codes: options.error_status_codes.clone(),
             snapstart_before_checkpoint_path: options.snapstart_before_checkpoint_path.clone(),
             snapstart_after_restore_path: options.snapstart_after_restore_path.clone(),
+            pool_idle_timeout: options.pool_idle_timeout,
         })
     }
 
@@ -1006,6 +1016,7 @@ impl Adapter<HttpConnector, Body> {
             self.healthcheck_url.clone(),
             self.healthcheck_protocol,
             self.healthcheck_healthy_status.clone(),
+            self.pool_idle_timeout,
         ));
         match (self.compression, self.invoke_mode) {
             (true, LambdaInvokeMode::Buffered) => {
@@ -1329,23 +1340,25 @@ mod tests {
     fn test_pool_idle_timeout() {
         // Unset -> default 4s.
         std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
-        assert_eq!(pool_idle_timeout(), Duration::from_secs(4));
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(4));
+        assert_eq!(AdapterOptions::default().pool_idle_timeout, Duration::from_secs(4));
 
-        // Explicit value -> parsed.
+        // Explicit value -> parsed, and surfaced on AdapterOptions.
         std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "30");
-        assert_eq!(pool_idle_timeout(), Duration::from_secs(30));
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(30));
+        assert_eq!(AdapterOptions::default().pool_idle_timeout, Duration::from_secs(30));
 
         // Zero is honored (disables idle keep-alive by timeout).
         std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "0");
-        assert_eq!(pool_idle_timeout(), Duration::from_secs(0));
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(0));
 
         // Surrounding whitespace tolerated.
         std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "  15  ");
-        assert_eq!(pool_idle_timeout(), Duration::from_secs(15));
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(15));
 
         // Unparseable -> default 4s.
         std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "not-a-number");
-        assert_eq!(pool_idle_timeout(), Duration::from_secs(4));
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(4));
 
         std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
     }
@@ -1915,7 +1928,7 @@ mod tests {
         let base_ptr = Arc::as_ptr(adapter.client()) as *const ();
 
         // Publish a fresh client.
-        let fresh = Arc::new(build_client());
+        let fresh = Arc::new(build_client(Duration::from_secs(4)));
         let fresh_ptr = Arc::as_ptr(&fresh) as *const ();
         assert!(adapter.restored_client.set(fresh).is_ok(), "set should succeed once");
 
