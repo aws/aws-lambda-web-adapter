@@ -654,20 +654,33 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
 /// (`domain.set_path(configured)`), so the guard protects exactly the route the
 /// app actually serves — not the raw env-var string. Returns:
 ///
-/// * `None` — no hook configured, or a path that canonicalizes to the root
+/// * `Ok(None)` — no hook configured, or a path that canonicalizes to the root
 ///   (`""`, `/`, `//`, `/..`, `/.`, `/foo/..`, `/%2f`, …) and would otherwise
 ///   match every request to `/`; the guard treats these as "no hook".
-/// * `Some(HookTarget::Canonical(segments))` — the normal case: the post-`set_path`
-///   route canonicalized (percent-decode, collapse `//`/`.`/`..`, case-fold).
-/// * `Some(HookTarget::Raw(path))` — the post-`set_path` route could not be
-///   canonicalized (a surviving control byte / malformed escape). The guard then
-///   compares the raw post-`set_path` string on both sides; since the request side
-///   is also a post-`set_path` `app_url.path()`, this is a like-for-like compare,
-///   not the raw-vs-normalized mismatch that previously left the route unguarded.
-fn hook_target(domain: &Url, configured: &Option<String>) -> Option<HookTarget> {
-    let configured = configured.as_deref()?;
+/// * `Ok(Some(segments))` — the normal case: the post-`set_path` route
+///   canonicalized (percent-decode, collapse `//`/`.`/`..`, case-fold).
+/// * `Err(_)` — the route cannot be guarded exactly. Two cases, both always a
+///   misconfiguration of a control-plane path, and both rejected rather than
+///   downgraded to a weaker comparison (the app still *serves* such a route, so a
+///   partial guard leaves a state-mutating route externally reachable):
+///   1. It could not be canonicalized at all (a malformed `%` escape, or non-UTF-8
+///      after decoding).
+///   2. Its canonical form contains a literal `%`. This is what makes
+///      [`matches_hook_path`]'s pass-through of an undecidable *request* path safe
+///      on every framework, without modelling per-framework decoding: an
+///      undecidable request path is either rejected by the router outright (Node
+///      throws `URIError`, so Express answers 400; Go and Spring likewise 400) or
+///      decoded leniently into a path containing a literal `%` or U+FFFD (Python's
+///      `unquote`) — and neither can equal a `%`-free hook route.
+///
+/// `Adapter::new` propagates the error, failing initialization with an actionable
+/// message rather than starting up with the hook route reachable.
+fn hook_target(domain: &Url, configured: &Option<String>) -> Result<Option<Vec<String>>, Error> {
+    let Some(configured) = configured.as_deref() else {
+        return Ok(None);
+    };
     if configured.is_empty() {
-        return None;
+        return Ok(None);
     }
     // Normalize the configured path exactly as post_hook will send it, so the two
     // sides of the guard comparison cannot diverge by construction.
@@ -680,28 +693,25 @@ fn hook_target(domain: &Url, configured: &Option<String>) -> Option<HookTarget> 
         // "no hook" rather than 403-ing the app root. This decision must live AFTER
         // canonicalization: a raw pre-check on the configured string misses the
         // spellings that only collapse to root once `..`/`.`/encoded-slash resolve.
-        Some(segments) if segments.is_empty() => None,
-        Some(segments) => Some(HookTarget::Canonical(segments)),
-        None => {
-            tracing::warn!(
-                configured = %configured,
-                outbound = %outbound,
-                "SnapStart hook path is not canonicalizable after URL normalization; \
-                 guarding the raw normalized route only. Fix the configured path \
-                 (percent-encoding / control bytes) to restore strict matching."
-            );
-            Some(HookTarget::Raw(outbound))
-        }
+        Some(segments) if segments.is_empty() => Ok(None),
+        // A literal `%` anywhere in the canonical route breaks the invariant that
+        // lets the request side pass undecidable paths through (see case 2 above).
+        Some(segments) if segments.iter().any(|s| s.contains('%')) => Err(Error::from(format!(
+            "SnapStart hook path {configured:?} resolves to a route containing a literal `%` \
+             ({outbound:?} decodes to /{}). The 403 guard cannot cover every spelling a web \
+             framework resolves onto such a route, so it is rejected rather than left partially \
+             protected. Choose a hook path without a percent sign.",
+            segments.join("/")
+        ))),
+        Some(segments) => Ok(Some(segments)),
+        None => Err(Error::from(format!(
+            "SnapStart hook path {configured:?} is not canonicalizable after URL normalization \
+             (normalized to {outbound:?}): it contains a malformed % escape or a byte sequence \
+             that is not UTF-8 once decoded. The 403 guard cannot cover the encoded spellings \
+             of such a route, so it is rejected rather than left partially protected. Choose a \
+             hook path without a percent sign."
+        ))),
     }
-}
-
-/// Precomputed guard target for a configured SnapStart hook path. See [`hook_target`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum HookTarget {
-    /// Canonicalized post-`set_path` route (the normal case).
-    Canonical(Vec<String>),
-    /// Raw post-`set_path` route, used when canonicalization is impossible.
-    Raw(String),
 }
 
 /// True if the outbound request path resolves to the precomputed hook route.
@@ -714,18 +724,17 @@ enum HookTarget {
 /// rewritten form, closing the divergence where the app served a route the guard
 /// did not protect.
 ///
-/// * `HookTarget::Canonical` — canonicalize the request path and compare segment
-///   lists. An undecidable request path (malformed escape / control byte) is one
-///   the app router cannot resolve to the hook either, so it is NOT the hook and
-///   passes through.
-/// * `HookTarget::Raw` — compare the raw post-`set_path` strings (like-for-like).
-fn matches_hook_path(want: &Option<HookTarget>, outbound_request_path: &str) -> bool {
+/// The request path is canonicalized and compared as segment lists. An undecidable
+/// request path (a malformed escape, or non-UTF-8 once decoded) passes through.
+/// That is safe — not merely a heuristic — because [`hook_target`] guarantees
+/// `want` contains no literal `%`: a router either rejects an undecidable path
+/// outright (400) or decodes it leniently to something containing a literal `%` or
+/// U+FFFD, and neither can equal a `%`-free route. Passing through is what keeps a
+/// request like `/reports/100%` from taking a false 403 under an unrelated hook.
+fn matches_hook_path(want: &Option<Vec<String>>, outbound_request_path: &str) -> bool {
     match want {
         None => false,
-        Some(HookTarget::Canonical(want_segments)) => {
-            canonicalize_hook_path(outbound_request_path).is_some_and(|got| &got == want_segments)
-        }
-        Some(HookTarget::Raw(want_raw)) => outbound_request_path == want_raw,
+        Some(want_segments) => canonicalize_hook_path(outbound_request_path).is_some_and(|got| &got == want_segments),
     }
 }
 
@@ -781,9 +790,9 @@ pub struct Adapter<C, B> {
     /// Precomputed guard target for the before-checkpoint hook path, derived from
     /// `domain.set_path(configured)` so it matches the route the app actually
     /// serves (see [`hook_target`]).
-    hook_target_before_checkpoint: Option<HookTarget>,
+    hook_target_before_checkpoint: Option<Vec<String>>,
     /// Precomputed guard target for the after-restore hook path (see [`hook_target`]).
-    hook_target_after_restore: Option<HookTarget>,
+    hook_target_after_restore: Option<Vec<String>>,
     pool_idle_timeout: Duration,
     readiness_check_timeout: Option<Duration>,
 }
@@ -954,8 +963,10 @@ impl Adapter<HttpConnector, Body> {
         // Precompute the SnapStart hook guard targets while `domain` is still in
         // scope, so the guard compares against the route the app actually serves
         // (`domain.set_path(configured)`) rather than the raw configured string.
-        let hook_target_before_checkpoint = hook_target(&domain, &options.snapstart_before_checkpoint_path);
-        let hook_target_after_restore = hook_target(&domain, &options.snapstart_after_restore_path);
+        // A hook path the guard cannot cover fails initialization here rather than
+        // starting up with a state-mutating route left externally reachable.
+        let hook_target_before_checkpoint = hook_target(&domain, &options.snapstart_before_checkpoint_path)?;
+        let hook_target_after_restore = hook_target(&domain, &options.snapstart_after_restore_path)?;
 
         // Validate TCP protocol requirements
         if options.readiness_check_protocol == Protocol::Tcp {
@@ -2432,14 +2443,19 @@ mod tests {
         );
     }
 
-    /// Test helper mirroring the real guard: the configured path is turned into a
-    /// [`HookTarget`] via [`hook_target`] (through `set_path`), and the request path
-    /// is passed through the same `set_path` normalization the request side uses in
+    /// Test helper mirroring the real guard: the configured path is canonicalized
+    /// by [`hook_target`] (through `set_path`), and the request path is passed
+    /// through the same `set_path` normalization the request side uses in
     /// `fetch_response` (`app_url.path()`). Both sides therefore share the identical
     /// transformation, exactly as in production.
+    ///
+    /// Panics on a configured path `hook_target` rejects; that path never reaches
+    /// the guard in production either, because `Adapter::new` fails first (see
+    /// `test_non_canonicalizable_configured_hook_path_is_rejected`).
     fn guard_blocks(configured: &str, request: &str) -> bool {
         let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
-        let want = hook_target(&domain, &Some(configured.to_string()));
+        let want =
+            hook_target(&domain, &Some(configured.to_string())).expect("configured hook path must be canonicalizable");
         let mut u = domain.clone();
         u.set_path(request);
         matches_hook_path(&want, u.path())
@@ -2503,6 +2519,83 @@ mod tests {
         assert!(!guard_blocks("/snapstart/after", "/%2"));
         // The exact bot-reported case: hook shares the first segment.
         assert!(!guard_blocks("/reports/snapshot", "/reports/100%"));
+    }
+
+    /// A configured hook path that cannot be canonicalized must be REJECTED, not
+    /// degraded to a raw string compare.
+    ///
+    /// Regression for the bot SECURITY finding: the old `HookTarget::Raw` fallback
+    /// compared raw strings on both sides, so a configured `/snapstart/after%`
+    /// (bare `%`, undecidable) left every encoded spelling of that same route
+    /// unguarded — verified against uvicorn/Starlette, which serves the route as
+    /// `/snapstart/after%` and resolves a request for `/snapstart/after%25` onto it.
+    /// A non-canonicalizable hook path is always a misconfiguration, so fail init
+    /// rather than ship a guard that reads as protective but is not.
+    #[test]
+    fn test_non_canonicalizable_configured_hook_path_is_rejected() {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        for cfg in ["/snapstart/after%", "/snapstart/%2", "/snapstart/%zz"] {
+            assert!(
+                hook_target(&domain, &Some(cfg.to_string())).is_err(),
+                "configured hook path {cfg:?} must be rejected, not silently degraded"
+            );
+        }
+        // A canonicalizable path is still accepted.
+        assert_eq!(
+            hook_target(&domain, &Some("/snapstart/after".to_string())).unwrap(),
+            Some(vec!["snapstart".to_string(), "after".to_string()])
+        );
+    }
+
+    /// A configured hook path whose canonical form contains a literal `%` must also
+    /// be rejected — this is what makes the request-side pass-through provably safe.
+    ///
+    /// Rejecting only *non-canonicalizable* configs is not enough: configuring the
+    /// same route the "correct" way (`/snapstart/after%25`, canonical `after%`) left
+    /// the bare-`%` spelling reachable, because an undecidable request path passes
+    /// through the guard while uvicorn/Starlette still resolves it onto the route
+    /// (verified end-to-end: `POST /snapstart/after%` -> 200, handler ran).
+    ///
+    /// With no `%` in any hook route, the pass-through cannot be exploited on ANY
+    /// framework, without the adapter modelling per-framework decoding: an
+    /// undecidable request path either is rejected by the router outright (Node
+    /// throws `URIError` -> Express 400; Go and Spring likewise 400), or is decoded
+    /// leniently into a path containing a literal `%` or U+FFFD (Python's
+    /// `unquote`) — and neither can equal a `%`-free hook route.
+    #[test]
+    fn test_configured_hook_path_with_literal_percent_is_rejected() {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        for cfg in ["/snapstart/after%25", "/reports/100%25", "/%25/after"] {
+            assert!(
+                hook_target(&domain, &Some(cfg.to_string())).is_err(),
+                "configured hook path {cfg:?} canonicalizes to a route containing `%` \
+                 and must be rejected"
+            );
+        }
+        // Sanity: a `%`-free route is unaffected, and a request carrying a literal
+        // percent under an unrelated route still must NOT be blocked.
+        assert!(hook_target(&domain, &Some("/snapstart/after".to_string())).is_ok());
+        assert!(!guard_blocks("/reports/snapshot", "/reports/100%25"));
+        assert!(!guard_blocks("/reports/snapshot", "/reports/100%"));
+    }
+
+    /// `Adapter::new` must surface that rejection, so a misconfigured function
+    /// fails initialization with a clear error instead of starting with a
+    /// weakened guard on a state-mutating route.
+    #[test]
+    fn test_adapter_new_fails_on_non_canonicalizable_hook_path() {
+        let options = AdapterOptions {
+            snapstart_after_restore_path: Some("/snapstart/after%".to_string()),
+            ..Default::default()
+        };
+        let err = Adapter::new(&options)
+            .err()
+            .expect("Adapter::new must reject a non-canonicalizable hook path");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/snapstart/after%"),
+            "error must name the offending path, got: {msg}"
+        );
     }
 
     #[test]
