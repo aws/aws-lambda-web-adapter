@@ -39,6 +39,14 @@
   `lambda_runtime::run_concurrent` — does not add `TracingLayer`; the adapter now
   applies it explicitly, so per-request log fields (including the hook-path 403
   warning) are no longer dropped.
+- Close a hook-guard bypass for request paths containing an encoded control byte
+  (e.g. `POST /snapstart/after%0A`). The guard previously treated a control byte as
+  "undecidable" and passed the request through, but a router such as Starlette
+  still resolves the surrounding path to the hook route (Python's `$` matches
+  immediately before a trailing newline), leaving the state-mutating hook route
+  externally reachable. Control bytes are now stripped during canonicalization so
+  the path collapses onto the hook route and is blocked; a malformed percent-escape
+  (e.g. `/reports/100%`) still passes through, so no false 403 is introduced.
 - Restore `pool_max_idle_per_host(0)` on the inner-app HTTP client under SnapStart
   (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) so the base client never retains an
   idle connection that would be captured in the snapshot and handed out dead after

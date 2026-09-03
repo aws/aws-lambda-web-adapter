@@ -615,10 +615,16 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
     // undecidable and get a false 403. A malformed escape or non-UTF-8 result
     // still yields None (reject).
     let current = percent_decode_once(path)?;
-    // Reject any control/null byte on the hook-adjacent path.
-    if current.bytes().any(|b| b < 0x20 || b == 0x7F) {
-        return None;
-    }
+    // Control bytes are NOT "undecidable": a downstream router can still resolve a
+    // path that carries them (e.g. Python's `$` matches immediately before a
+    // trailing `\n`, so Starlette resolves `/hook\n` to the `/hook` route). Bailing
+    // out with `None` here would make `matches_hook_path` pass such a request
+    // through and leave the hook route externally reachable. So STRIP control bytes
+    // (including DEL) and keep canonicalizing — `/snapstart/after%0A` then
+    // canonicalizes to `["snapstart", "after"]` and is blocked. A malformed `%`
+    // escape / non-UTF-8 result is different (the `?` above already returned None
+    // for it) and keeps its pass-through, avoiding the `/reports/100%` false 403.
+    let current: String = current.chars().filter(|c| !c.is_control()).collect();
     let mut segments: Vec<String> = Vec::new();
     for seg in current.split('/') {
         // Drop matrix / path parameters (everything from the first `;` in a
@@ -2236,6 +2242,10 @@ mod tests {
             "/snapstart/after;x=1",            // matrix param: stripped by Spring MVC / servlet routing
             "/snapstart/after;jsessionid=abc", // servlet session param variant
             "/snapstart;a=b/after",            // matrix param on a non-terminal segment
+            "/snapstart/after%0A",             // trailing LF: Starlette `$` matches before `\n`
+            "/snapstart/after%0a",             // lowercase-encoded LF
+            "/snapstart/after%0d%0a",          // trailing CRLF
+            "/snapstart/after%00",             // trailing NUL
         ];
 
         for raw in blocked {
@@ -2411,9 +2421,15 @@ mod tests {
             canonicalize_hook_path("/reports/100%25"),
             Some(vec!["reports".to_string(), "100%".to_string()]),
         );
-        // Undecidable inputs -> None (caller fails closed).
+        // A malformed `%` escape is undecidable -> None (request side passes through).
         assert_eq!(canonicalize_hook_path("/snapstart/%2"), None);
-        assert_eq!(canonicalize_hook_path("/snapstart/af\u{0}ter"), None);
+        // A control byte is NOT undecidable: it is stripped and canonicalization
+        // continues, so `/snapstart/af\u{0}ter` collapses onto the hook route and
+        // will be blocked (a router like Starlette resolves it to `/snapstart/after`).
+        assert_eq!(
+            canonicalize_hook_path("/snapstart/af\u{0}ter"),
+            Some(vec!["snapstart".to_string(), "after".to_string()]),
+        );
     }
 
     /// Test helper mirroring the real guard: the configured path is turned into a
@@ -2467,12 +2483,17 @@ mod tests {
         assert!(!matches_hook_path(&None, "/snapstart/after")); // no hook configured
         assert!(!matches_hook_path(&None, "/snapstart/%2")); // ...and none => never match
 
-        // An undecidable request path (bare `%`, control byte) is one the app
-        // router cannot decode to the hook route either, so it is NOT the hook
-        // and passes through — even when it shares the hook's leading segment.
+        // A malformed `%` escape is undecidable — the app router cannot decode it
+        // to the hook route either — so it is NOT the hook and passes through, even
+        // when it shares the hook's leading segment.
         assert!(!guard_blocks("/snapstart/after", "/snapstart/%2"));
         assert!(!guard_blocks("/snapstart/after", "/snapstart/%")); // trailing bare %
-        assert!(!guard_blocks("/snapstart/after", "/snapstart/af\u{0}ter")); // control byte
+
+        // A control byte is DIFFERENT: a router can still resolve the surrounding
+        // path to the hook (Python's `$` matches before a trailing `\n`), so the
+        // guard strips control bytes and BLOCKS the request rather than passing it
+        // through. `af\u{0}ter` canonicalizes to the `after` segment.
+        assert!(guard_blocks("/snapstart/after", "/snapstart/af\u{0}ter"));
 
         // Unrelated undecidable routes are likewise not blocked (bot findings:
         // /reports/100% under a shared-prefix hook, /100%, /other/%2).
