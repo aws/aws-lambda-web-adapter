@@ -884,7 +884,12 @@ impl Adapter<HttpConnector, Body> {
     /// Creates a new HTTP Adapter instance.
     ///
     /// This function initializes a new HTTP client configured to communicate with
-    /// your web application, using a 4-second idle timeout for connection pooling.
+    /// your web application. The idle-connection keep-alive comes from
+    /// [`AdapterOptions::pool_idle_timeout`] (`AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`,
+    /// default 4 seconds). Under SnapStart
+    /// (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) the client additionally sets
+    /// `pool_max_idle_per_host(0)`, so no idle connection can be captured in the
+    /// snapshot and handed out dead after a restore.
     ///
     /// # Arguments
     ///
