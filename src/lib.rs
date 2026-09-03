@@ -654,15 +654,13 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
 /// (`domain.set_path(configured)`), so the guard protects exactly the route the
 /// app actually serves — not the raw env-var string. Returns:
 ///
-/// * `Ok(None)` — no hook configured, or a path that canonicalizes to the root
-///   (`""`, `/`, `//`, `/..`, `/.`, `/foo/..`, `/%2f`, …) and would otherwise
-///   match every request to `/`; the guard treats these as "no hook".
+/// * `Ok(None)` — no hook configured (unset, or set to the empty string).
 /// * `Ok(Some(segments))` — the normal case: the post-`set_path` route
 ///   canonicalized (percent-decode, collapse `//`/`.`/`..`, case-fold).
-/// * `Err(_)` — the route cannot be guarded exactly. Two cases, both always a
-///   misconfiguration of a control-plane path, and both rejected rather than
-///   downgraded to a weaker comparison (the app still *serves* such a route, so a
-///   partial guard leaves a state-mutating route externally reachable):
+/// * `Err(_)` — the route cannot be guarded exactly. Three cases, all always a
+///   misconfiguration of a control-plane path, and all rejected rather than
+///   downgraded to a weaker guard or to no guard at all (the app still *serves*
+///   such a route, so anything less leaves a state-mutating route reachable):
 ///   1. It could not be canonicalized at all (a malformed `%` escape, or non-UTF-8
 ///      after decoding).
 ///   2. Its canonical form contains a literal `%`. This is what makes
@@ -672,9 +670,16 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
 ///      throws `URIError`, so Express answers 400; Go and Spring likewise 400) or
 ///      decoded leniently into a path containing a literal `%` or U+FFFD (Python's
 ///      `unquote`) — and neither can equal a `%`-free hook route.
+///   3. It collapses to the app root (`/`, `//`, `/..`, `/.`, `/foo/..`, `/%2f`, …).
+///      Guarding the root would 403 all normal traffic, so the guard cannot cover
+///      it — and `SnapStartHooks::post_hook` would still POST to `/` on every
+///      lifecycle event, which is a 405 on an app that does not handle `POST /`
+///      and fails the phase. A hook path must be one "your normal application
+///      traffic does not use", which the root never is.
 ///
 /// `Adapter::new` propagates the error, failing initialization with an actionable
-/// message rather than starting up with the hook route reachable.
+/// message rather than starting up with the hook route reachable or with a hook
+/// that fails every restore.
 fn hook_target(domain: &Url, configured: &Option<String>) -> Result<Option<Vec<String>>, Error> {
     let Some(configured) = configured.as_deref() else {
         return Ok(None);
@@ -689,11 +694,20 @@ fn hook_target(domain: &Url, configured: &Option<String>) -> Result<Option<Vec<S
     let outbound = u.path().to_string();
     match canonicalize_hook_path(&outbound) {
         // A configured path that canonicalizes to the root (e.g. "/", "//", "/..",
-        // "/.", "/foo/..", "/%2f") would match every request to `/`. Treat it as
-        // "no hook" rather than 403-ing the app root. This decision must live AFTER
-        // canonicalization: a raw pre-check on the configured string misses the
-        // spellings that only collapse to root once `..`/`.`/encoded-slash resolve.
-        Some(segments) if segments.is_empty() => Ok(None),
+        // "/.", "/foo/..", "/%2f") cannot be guarded: matching it would 403 every
+        // request to `/`. Reject it rather than silently disabling the guard, because
+        // `after_restore` POSTs the RAW configured path regardless of the guard
+        // target, so "no hook" here still leaves the hook firing at `/`. This check
+        // must live AFTER canonicalization: a raw pre-check on the configured string
+        // misses the spellings that only collapse to root once `..`/`.`/encoded-slash
+        // resolve.
+        Some(segments) if segments.is_empty() => Err(Error::from(format!(
+            "SnapStart hook path {configured:?} collapses to the application root \
+             (normalized to {outbound:?}). It cannot be guarded — matching it would return 403 \
+             for every request to `/` — and the hook would still POST to `/` on every SnapStart \
+             lifecycle event, failing the phase on any app that does not handle `POST /`. Choose \
+             a dedicated path your normal traffic does not use, such as `/snapstart/after`."
+        ))),
         // A literal `%` anywhere in the canonical route breaks the invariant that
         // lets the request side pass undecidable paths through (see case 2 above).
         Some(segments) if segments.iter().any(|s| s.contains('%')) => Err(Error::from(format!(
@@ -2599,16 +2613,57 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_hook_path_empty_or_root_config_never_matches() {
-        // An empty or root-only configured hook path must never 403 the app root
-        // (bot finding: AWS_LWA_..._PATH="" blocks "/"). This includes spellings
-        // that only collapse to root after canonicalization (`..`, `.`, `%2f`).
-        for cfg in ["", "/", "//", "///", "/..", "/.", "/foo/..", "/%2f", "/a/../.."] {
-            assert!(!guard_blocks(cfg, "/"), "config {cfg:?} must not block /");
+    fn test_matches_hook_path_empty_config_never_matches() {
+        // An unset or empty configured hook path means "no hook": it must never 403
+        // the app root (bot finding: AWS_LWA_..._PATH="" blocks "/").
+        assert!(!guard_blocks("", "/"), "empty config must not block /");
+        assert!(!guard_blocks("", "/anything"), "empty config must not block /anything");
+        assert!(!matches_hook_path(&None, "/"));
+    }
+
+    /// A configured hook path that collapses to the app root must be REJECTED.
+    ///
+    /// Regression for the bot `[BUG]` finding: `hook_target` returned `Ok(None)`
+    /// for these, silently disabling the guard, while `SnapStartHooks::after_restore`
+    /// still POSTs to the raw configured path (it reads `after_restore_path`, not the
+    /// guard target). The two therefore diverged with no diagnostic: with
+    /// `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/..` the adapter POSTs to `/` on every
+    /// restore, which is a 405 on both FastAPI examples (they declare only
+    /// `@app.get("/")`), and `post_hook` treats any non-2xx as fatal — so every
+    /// restore failed with nothing explaining why.
+    ///
+    /// Rejecting is the consistent resolution: the guard cannot protect the app root
+    /// without 403-ing all normal traffic, and the docs require a hook path "your
+    /// normal application traffic does not use" — which the root never is. Same rule
+    /// as the `%` cases: if the adapter cannot guard it, it refuses to run with it.
+    #[test]
+    fn test_root_collapsing_configured_hook_path_is_rejected() {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        for cfg in ["/", "//", "///", "/..", "/.", "/foo/..", "/%2f", "/a/../..", "/./"] {
             assert!(
-                !guard_blocks(cfg, "/anything"),
-                "config {cfg:?} must not block /anything"
+                hook_target(&domain, &Some(cfg.to_string())).is_err(),
+                "configured hook path {cfg:?} collapses to the app root and must be rejected"
             );
         }
+        // Unset and empty remain "no hook", not an error.
+        assert!(hook_target(&domain, &None).unwrap().is_none());
+        assert!(hook_target(&domain, &Some(String::new())).unwrap().is_none());
+        // A real route is still accepted.
+        assert!(hook_target(&domain, &Some("/snapstart/after".to_string())).is_ok());
+    }
+
+    /// `Adapter::new` must surface the root-collapse rejection, so the operator gets
+    /// one clear error at init instead of a 405-driven restore failure every restore.
+    #[test]
+    fn test_adapter_new_fails_on_root_collapsing_hook_path() {
+        let options = AdapterOptions {
+            snapstart_after_restore_path: Some("/..".to_string()),
+            ..Default::default()
+        };
+        let err = Adapter::new(&options)
+            .err()
+            .expect("Adapter::new must reject a hook path that collapses to the root");
+        let msg = err.to_string();
+        assert!(msg.contains("/.."), "error must name the offending path, got: {msg}");
     }
 }
