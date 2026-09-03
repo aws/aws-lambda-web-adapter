@@ -377,7 +377,7 @@ pub struct AdapterOptions {
     /// Idle-connection keep-alive for the adapter's HTTP client to the inner app.
     ///
     /// Configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` (whole seconds).
-    /// Default: 4 seconds ([`DEFAULT_POOL_IDLE_TIMEOUT_SECONDS`]).
+    /// Default: 4 seconds.
     pub pool_idle_timeout: Duration,
 
     /// Bound on the readiness check: how long the adapter waits for the inner app
@@ -595,15 +595,19 @@ fn percent_decode_once(input: &str) -> Option<String> {
 /// contains `%2f` produces a different segment list and is left alone. This keeps
 /// the strictness targeted: it only bites paths that canonicalize onto the hook.
 ///
-/// Returns `None` only for genuinely undecidable inputs (a malformed `%` escape,
-/// non-UTF-8 after decoding, or a control/null byte). Because the guard runs on
-/// the already-`set_path`-normalized outbound path, an undecidable path is one the
-/// downstream app router cannot resolve to the hook route either, so
+/// Returns `None` only for two genuinely undecidable inputs: a malformed `%` escape,
+/// or a byte sequence that is not UTF-8 once decoded. A control/null byte is *not*
+/// undecidable — it is stripped before canonicalization, which *widens* the blocked
+/// equivalence class (`/snapstart/af%00ter` and `/snapstart/after%0A` canonicalize
+/// onto the hook route and are blocked), because a router can still resolve such a
+/// path to the hook: Python's `$` matches before a trailing newline.
+///
 /// [`matches_hook_path`] treats a `None` **request** path as *not the hook* and
 /// passes it through (see `matches_hook_path` and
-/// `test_matches_hook_path_undecidable_passes_through`). A `None` on the
-/// **configured** side instead falls back to a raw exact-string guard in
-/// [`hook_target`], so a misconfigured hook route stays protected.
+/// `test_matches_hook_path_undecidable_passes_through`); that is safe because
+/// [`hook_target`] guarantees no hook route contains a literal `%`. A `None` on the
+/// **configured** side is rejected outright by [`hook_target`], failing
+/// initialization rather than leaving the route partially guarded.
 fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
     // Percent-decode a SINGLE pass, mirroring what the downstream app router
     // does. A router decodes exactly once, so `/snapstart/%61fter` reaches the
@@ -613,7 +617,7 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
     // relative to the router — buying no extra protection while making a validly
     // single-encoded path like `/reports/100%25` (i.e. `/reports/100%`) look
     // undecidable and get a false 403. A malformed escape or non-UTF-8 result
-    // still yields None (reject).
+    // still yields None — the only two cases that do; see the contract above.
     let current = percent_decode_once(path)?;
     // Control bytes are NOT "undecidable": a downstream router can still resolve a
     // path that carries them (e.g. Python's `$` matches immediately before a
@@ -645,6 +649,16 @@ fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
         }
     }
     Some(segments)
+}
+
+/// Treats an empty configured value as unset.
+///
+/// An empty `AWS_LWA_SNAPSTART_*_PATH` means "this hook does not fire". Collapsing
+/// it to `None` at the single point where [`Adapter::new`] reads it keeps the guard
+/// target and the hook's POST target from disagreeing — see
+/// `test_empty_hook_path_is_normalized_on_both_sides`.
+fn non_empty(value: &Option<String>) -> Option<String> {
+    value.as_deref().filter(|v| !v.is_empty()).map(str::to_string)
 }
 
 /// Precomputes the guard target for a configured hook path.
@@ -818,13 +832,16 @@ pub struct Adapter<C, B> {
 /// idle-connection keep-alive, resolved from [`AdapterOptions::pool_idle_timeout`]
 /// (env `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`, default 4 seconds).
 ///
-/// `Duration::ZERO` disables idle keep-alive entirely: no connection is retained
-/// between requests (measured equivalent to `pool_max_idle_per_host(0)`, including
-/// for back-to-back requests). [`Adapter::new`] uses that for the pre-snapshot
-/// client under SnapStart — see [`base_client_idle_timeout`] — so nothing dead can
-/// be captured in a snapshot. This function itself reads no environment: the caller
-/// decides, so the post-restore rebuild cannot silently inherit the pre-snapshot
-/// restriction.
+/// `Duration::ZERO` means a pooled connection is never *reused*: hyper's pool stays
+/// enabled (`Config::is_enabled()` is `max_idle_per_host > 0`), so a finished
+/// connection is still parked in the idle map, but `Expiration::expires` compares
+/// `elapsed > timeout` and so evicts it at the next checkout instead of handing it
+/// out. No idle-eviction task is spawned either (`spawn_idle_interval` returns early
+/// on `Duration::ZERO`), so nothing closes it proactively. [`Adapter::new`] uses
+/// `ZERO` for the pre-snapshot client under SnapStart — see
+/// [`base_client_idle_timeout`]. This function itself reads no environment: the
+/// caller decides, so the post-restore rebuild cannot silently inherit the
+/// pre-snapshot restriction.
 fn build_client(idle_timeout: Duration) -> Client<HttpConnector, Body> {
     let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
     builder.pool_idle_timeout(idle_timeout);
@@ -834,12 +851,22 @@ fn build_client(idle_timeout: Duration) -> Client<HttpConnector, Body> {
 /// Idle keep-alive for the client [`Adapter::new`] builds — the one used before a
 /// SnapStart snapshot is taken.
 ///
-/// Under SnapStart this is [`Duration::ZERO`], so the pre-snapshot client never
-/// retains an idle connection that could be captured in the snapshot and handed
-/// out — dead — after a restore (hyper#3810). `run()` additionally rebuilds a
-/// fresh client in the after-restore hook, but keeping this one safe by
-/// construction also protects a consumer driving the `Service` impl directly, who
-/// never triggers that hook.
+/// Under SnapStart this is [`Duration::ZERO`], so a connection captured in the
+/// snapshot can never be handed out — dead — after a restore (hyper#3810). Note the
+/// precise guarantee: the socket from the last pre-snapshot request *is* still in
+/// the pool, and therefore in the snapshot; what `ZERO` ensures is that it is
+/// evicted on checkout rather than reused, so no request ever travels over it. (The
+/// former `pool_max_idle_per_host(0)` disabled the pool outright and dropped the
+/// connection immediately — stronger on retention, identical on reuse.) `run()`
+/// additionally rebuilds a fresh client in the after-restore hook, but keeping this
+/// one safe by construction also protects a consumer driving the `Service` impl
+/// directly, who never triggers that hook.
+///
+/// The cost is that a pre-snapshot readiness poll reconnects on every 10ms attempt
+/// (measured: 27 connections per 300ms of polling, versus 1 with keep-alive). That
+/// is confined to init, which under SnapStart runs once per published version rather
+/// than per restore, and it is unchanged from the `pool_max_idle_per_host(0)`
+/// behavior this replaced.
 ///
 /// The configured value is NOT lost: it is kept on [`Adapter::pool_idle_timeout`]
 /// and used for the after-restore rebuild, whose pool starts empty and therefore
@@ -943,7 +970,7 @@ impl Adapter<HttpConnector, Body> {
     /// keep-alive disabled instead, so no connection can be captured in the snapshot
     /// and handed out dead after a restore; the configured value is retained and
     /// applied to the client rebuilt in the after-restore hook, which is what serves
-    /// invocations. See [`base_client_idle_timeout`].
+    /// invocations. See the private `base_client_idle_timeout` for the rationale.
     ///
     /// # Arguments
     ///
@@ -993,13 +1020,22 @@ impl Adapter<HttpConnector, Body> {
                 ))
             })?;
 
+        // Normalize an empty hook path to "unset" BEFORE anything reads it, so the
+        // guard target and the path the hook POSTs to cannot disagree. `hook_target`
+        // treats `Some("")` as "no hook", but `SnapStartHooks` would still take its
+        // `if let Some(path)` branch and POST to `Url::set_path("")` — which is `/`,
+        // the unguarded application root. Env-derived options already drop empties;
+        // this covers an `AdapterOptions` built directly.
+        let snapstart_before_checkpoint_path = non_empty(&options.snapstart_before_checkpoint_path);
+        let snapstart_after_restore_path = non_empty(&options.snapstart_after_restore_path);
+
         // Precompute the SnapStart hook guard targets while `domain` is still in
         // scope, so the guard compares against the route the app actually serves
         // (`domain.set_path(configured)`) rather than the raw configured string.
         // A hook path the guard cannot cover fails initialization here rather than
         // starting up with a state-mutating route left externally reachable.
-        let hook_target_before_checkpoint = hook_target(&domain, &options.snapstart_before_checkpoint_path)?;
-        let hook_target_after_restore = hook_target(&domain, &options.snapstart_after_restore_path)?;
+        let hook_target_before_checkpoint = hook_target(&domain, &snapstart_before_checkpoint_path)?;
+        let hook_target_after_restore = hook_target(&domain, &snapstart_after_restore_path)?;
 
         // Validate TCP protocol requirements
         if options.readiness_check_protocol == Protocol::Tcp {
@@ -1033,8 +1069,8 @@ impl Adapter<HttpConnector, Body> {
             invoke_mode: options.invoke_mode,
             authorization_source: options.authorization_source.clone(),
             error_status_codes: options.error_status_codes.clone(),
-            snapstart_before_checkpoint_path: options.snapstart_before_checkpoint_path.clone(),
-            snapstart_after_restore_path: options.snapstart_after_restore_path.clone(),
+            snapstart_before_checkpoint_path,
+            snapstart_after_restore_path,
             hook_target_before_checkpoint,
             hook_target_after_restore,
             pool_idle_timeout: options.pool_idle_timeout,
@@ -1163,15 +1199,17 @@ impl Adapter<HttpConnector, Body> {
             // readiness_check_timeout (see AdapterOptions::readiness_check_timeout).
             // A timeout here is non-fatal: the app keeps booting and the first
             // request re-checks readiness.
+            // `is_ok()` means the wait COMPLETED within the bound; the readiness wait
+            // itself never reports "not ready" (it retries until it is).
             timeout(Duration::from_secs_f32(9.8), self.check_readiness())
                 .await
-                .unwrap_or_default()
+                .is_ok()
         } else if let Some(t) = self.readiness_check_timeout {
             // Bound the sync-init readiness wait when configured. On expiry, refuse
             // to serve: fail init rather than admit traffic to an app that never
             // reported ready — this is the point of configuring the bound.
             match timeout(t, self.check_readiness()).await {
-                Ok(ready) => ready,
+                Ok(()) => true,
                 Err(_) => {
                     return Err(Error::from(format!(
                         "web application did not become ready within {t:?} \
@@ -1180,15 +1218,18 @@ impl Adapter<HttpConnector, Body> {
                 }
             }
         } else {
-            // Unset: unbounded wait, non-fatal result (historical behavior).
-            self.check_readiness().await
+            // Unset: unbounded wait (historical behavior). It only returns once the
+            // app is ready, so reaching this point means ready.
+            self.check_readiness().await;
+            true
         };
         self.ready_at_init.store(ready_at_init, Ordering::SeqCst);
         Ok(())
     }
 
-    /// Performs a single readiness check against the configured endpoint.
-    async fn check_readiness(&self) -> bool {
+    /// Waits for the app to report ready against the configured endpoint. Returns
+    /// only once it does; callers impose any bound with an external timeout.
+    async fn check_readiness(&self) {
         let url = self.healthcheck_url.clone();
         let protocol = self.healthcheck_protocol;
         self.is_web_ready(&url, &protocol).await
@@ -1197,9 +1238,10 @@ impl Adapter<HttpConnector, Body> {
     /// Waits for the web application to become ready, with retries.
     ///
     /// Uses a fixed 10ms interval between retry attempts and logs progress
-    /// at increasing intervals (100ms, 500ms, 1s, 2s, 5s, 10s).
-    async fn is_web_ready(&self, url: &Url, protocol: &Protocol) -> bool {
-        readiness::wait_until_ready(self.client(), url, *protocol, &self.healthcheck_healthy_status).await
+    /// at increasing intervals (100ms, 500ms, 1s, 2s, 5s, 10s). Returns only once
+    /// the app is ready — see [`readiness::wait_until_ready`].
+    async fn is_web_ready(&self, url: &Url, protocol: &Protocol) {
+        readiness::wait_until_ready(self.client(), url, *protocol, &self.healthcheck_healthy_status).await;
     }
 
     /// Performs a single readiness check using the configured protocol.
@@ -1409,12 +1451,13 @@ impl Adapter<HttpConnector, Body> {
         app_url.set_path(path);
 
         // The match is strict: it canonicalizes the outbound path (percent-decode,
-        // collapse `//`/`.`/`..`, case-fold) so that every spelling the downstream
-        // app router would resolve to the hook route is blocked — not just the exact
-        // configured string. An undecidable outbound path (malformed escape, control
-        // byte) is one the app router cannot resolve to the hook either, so it is
-        // treated as NOT the hook and passed through rather than 403'd. See
-        // `matches_hook_path`.
+        // strip control bytes, collapse `//`/`.`/`..`, case-fold) so that every
+        // spelling the downstream app router would resolve to the hook route is
+        // blocked — not just the exact configured string. Only a path that stays
+        // undecidable (a malformed `%` escape, or non-UTF-8 once decoded) is treated
+        // as NOT the hook and passed through rather than 403'd; that cannot reach a
+        // hook route, because `hook_target` rejects any route containing a literal
+        // `%`. See `matches_hook_path`.
         let outbound_path = app_url.path();
         if matches_hook_path(&self.hook_target_before_checkpoint, outbound_path)
             || matches_hook_path(&self.hook_target_after_restore, outbound_path)
@@ -1678,8 +1721,9 @@ mod tests {
     /// (hyper#3810). This also covers a consumer driving the `Service` impl directly,
     /// who never triggers the after-restore rebuild.
     ///
-    /// A zero idle timeout is the mechanism: measured equivalent to
-    /// `pool_max_idle_per_host(0)` — no reuse even for back-to-back requests.
+    /// A zero idle timeout is the mechanism: a pooled connection is evicted on
+    /// checkout rather than reused, so it is never served over. See
+    /// [`build_client`] for exactly what that does and does not guarantee.
     #[tokio::test]
     async fn test_adapter_new_client_never_pools_under_snapstart() {
         std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
@@ -2659,6 +2703,42 @@ mod tests {
         assert!(!guard_blocks("/snapstart/after", "/%2"));
         // The exact bot-reported case: hook shares the first segment.
         assert!(!guard_blocks("/reports/snapshot", "/reports/100%"));
+    }
+
+    /// An empty configured hook path must mean "no hook" on BOTH sides: the guard
+    /// target and the path the hook actually POSTs to.
+    ///
+    /// Regression: `hook_target` short-circuits on `configured.is_empty()` and
+    /// returns `Ok(None)` ("no hook"), but `Adapter::new` used to store the raw
+    /// `Some("")`, which `run()` hands to `SnapStartHooks`. `before_snapshot` /
+    /// `after_restore` then take their `if let Some(path)` branch and call
+    /// `post_hook(.., "")` — and `Url::set_path("")` yields `/`, so the adapter
+    /// POSTed to the unguarded application root on every lifecycle event (a 405 on
+    /// both FastAPI examples, which `post_hook` treats as fatal). That is the same
+    /// guard-versus-POST divergence the root-collapse rejection closed; `""` slipped
+    /// past it by returning before canonicalization. Normalizing to `None` here
+    /// keeps the documented "empty means unset" semantics while making the two
+    /// sides agree by construction.
+    #[test]
+    fn test_empty_hook_path_is_normalized_on_both_sides() {
+        let options = AdapterOptions {
+            snapstart_before_checkpoint_path: Some(String::new()),
+            snapstart_after_restore_path: Some(String::new()),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("empty hook paths mean 'no hook', not an error");
+        assert_eq!(
+            adapter.snapstart_before_checkpoint_path, None,
+            "an empty before-checkpoint path must not leave a hook that POSTs to /"
+        );
+        assert_eq!(
+            adapter.snapstart_after_restore_path, None,
+            "an empty after-restore path must not leave a hook that POSTs to /"
+        );
+        // The guard side already agreed; assert both halves together so they cannot
+        // drift apart again.
+        assert_eq!(adapter.hook_target_before_checkpoint, None);
+        assert_eq!(adapter.hook_target_after_restore, None);
     }
 
     /// A configured hook path that cannot be canonicalized must be REJECTED, not

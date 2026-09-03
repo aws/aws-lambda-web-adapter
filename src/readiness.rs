@@ -56,24 +56,30 @@ pub(crate) async fn check_web_readiness(
 }
 
 /// Waits for the web application to become ready, retrying on a fixed 10ms
-/// interval and logging progress at increasing checkpoints. Returns `true` once
-/// the app is ready. Callers bound the total wait with an external timeout.
+/// interval and logging progress at increasing checkpoints.
+///
+/// Returns only once the app is ready: [`FixedInterval`] is an unbounded iterator,
+/// so the retry never exhausts and there is no "gave up" outcome to report. Callers
+/// that need a bound must impose it externally with a timeout — an unbounded caller
+/// waits indefinitely, and the only signal in that case is the escalating
+/// `app is not ready after {}ms` log this emits at each checkpoint.
 pub(crate) async fn wait_until_ready(
     client: &Client<HttpConnector, Body>,
     url: &Url,
     protocol: Protocol,
     healthy_status: &[u16],
-) -> bool {
+) {
     let mut checkpoint = Checkpoint::new();
-    Retry::spawn(FixedInterval::from_millis(10), || {
+    // The `Err` variant is unreachable (see above), so the result is discarded
+    // rather than turned into a `bool` that callers would branch on pointlessly.
+    let _ = Retry::spawn(FixedInterval::from_millis(10), || {
         if checkpoint.lapsed() {
             tracing::info!(url = %url.to_string(), "app is not ready after {}ms", checkpoint.next_ms());
             checkpoint.increment();
         }
         check_web_readiness(client, url, protocol, healthy_status)
     })
-    .await
-    .is_ok()
+    .await;
 }
 
 pub(crate) struct Checkpoint {

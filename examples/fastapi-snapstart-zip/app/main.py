@@ -1,4 +1,3 @@
-import os
 import random
 
 from fastapi import FastAPI, Response

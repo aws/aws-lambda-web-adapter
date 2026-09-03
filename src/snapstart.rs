@@ -23,7 +23,9 @@ pub(crate) struct SnapStartHooks {
     /// Shared with the [`Adapter`](crate::Adapter); `after_restore` publishes the
     /// fresh client here so invocations stop using pre-snapshot connections.
     restored_client: Arc<OnceLock<Arc<Client<HttpConnector, Body>>>>,
-    /// Client used to make the hook calls themselves (the adapter's base client).
+    /// The adapter's base (pre-snapshot) client, used for the BEFORE-CHECKPOINT hook
+    /// only. `after_restore` deliberately uses the freshly built client instead, so
+    /// its hook POST never travels over a connection captured in the snapshot.
     client: Arc<Client<HttpConnector, Body>>,
     /// `http://host:port` of the inner application.
     domain: Url,
@@ -133,7 +135,7 @@ impl SnapStartResource for SnapStartHooks {
             //    expiry; when unset the wait is unbounded (historical behavior).
             match self.readiness_timeout {
                 Some(t) => self.check_readiness_with_timeout(&fresh, t).await?,
-                None => self.check_readiness_unbounded(&fresh).await?,
+                None => self.check_readiness_unbounded(&fresh).await,
             }
 
             Ok(())
@@ -152,29 +154,28 @@ impl SnapStartHooks {
         client: &Client<HttpConnector, Body>,
         readiness_timeout: Duration,
     ) -> Result<(), Error> {
-        let ready = timeout(readiness_timeout, self.wait_ready(client)).await.map_err(|_| {
+        timeout(readiness_timeout, self.wait_ready(client)).await.map_err(|_| {
             Error::from(format!(
                 "SnapStart after-restore readiness check timed out after {readiness_timeout:?}"
             ))
-        })?;
-        if !ready {
-            return Err(Error::from("SnapStart after-restore readiness check failed"));
-        }
-        Ok(())
+        })
     }
 
     /// Unbounded variant of [`check_readiness_with_timeout`](Self::check_readiness_with_timeout):
     /// waits indefinitely for the app to become ready. Used when
     /// `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` is unset (historical behavior).
-    async fn check_readiness_unbounded(&self, client: &Client<HttpConnector, Body>) -> Result<(), Error> {
-        if !self.wait_ready(client).await {
-            return Err(Error::from("SnapStart after-restore readiness check failed"));
-        }
-        Ok(())
+    ///
+    /// This cannot fail, only block: [`readiness::wait_until_ready`] retries forever.
+    /// An app that never recovers therefore holds the restore open until Lambda's own
+    /// restore timeout fires, with the escalating `app is not ready after {}ms` log as
+    /// the only adapter-side signal. Set `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to
+    /// convert that into a reported `/restore/error` instead.
+    async fn check_readiness_unbounded(&self, client: &Client<HttpConnector, Body>) {
+        self.wait_ready(client).await;
     }
 
     /// Shared readiness wait against the configured healthcheck endpoint.
-    async fn wait_ready(&self, client: &Client<HttpConnector, Body>) -> bool {
+    async fn wait_ready(&self, client: &Client<HttpConnector, Body>) {
         readiness::wait_until_ready(
             client,
             &self.healthcheck_url,
