@@ -26,7 +26,7 @@ To get more information of Wrapper script, please read Lambda documentation [her
 
 Both hook routes must return a `2xx` status code. A non-2xx response, a connection failure, or taking longer than 60 seconds to respond fails the SnapStart phase. The readiness check runs on every restore; by default it waits indefinitely for the app to recover, but you can bound it with `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (fractional seconds allowed), in which case a restore whose app does not report ready within that timeout fails — so traffic is never served against an app that has not finished recovering.
 
-These hook routes are protected: the adapter only allows them to be invoked internally during the SnapStart lifecycle. External callers that request `/snapstart/before` or `/snapstart/after` receive a `403 Forbidden`.
+These hook routes are protected on the Lambda invocation path: the 403 guard lives in the adapter, which only sits in front of your app while it processes Lambda events, so external callers that reach the function (via API Gateway or ALB) and request `/snapstart/before` or `/snapstart/after` receive a `403 Forbidden`. (The guard exists only when the adapter is in the request path — if you run your app without the adapter, protect or don't expose these state-mutating routes yourself.)
 
 ### Build and Deploy
 

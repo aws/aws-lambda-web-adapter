@@ -59,12 +59,18 @@ app to recover, but you can bound it with `AWS_LWA_READINESS_CHECK_TIMEOUT_SECON
 ready within that timeout fails — so traffic is never served against an app that has
 not finished recovering.
 
-These hook routes are protected: the adapter only allows them to be invoked internally
-during the SnapStart lifecycle. External callers that request `/snapstart/before` or
-`/snapstart/after` receive a `403 Forbidden`.
+These hook routes are protected **on the Lambda invocation path**: the 403 guard
+lives in the adapter, which only sits in front of your app when it is processing
+Lambda events, so external callers that reach the function via API Gateway or ALB
+and request `/snapstart/before` or `/snapstart/after` receive a `403 Forbidden`.
 
-Because the adapter is packaged inside the image, the same container also runs
-unchanged on Amazon ECS, Amazon EKS, or a local Docker host.
+> **Warning:** that guard exists only when the adapter is in the request path.
+> Because the adapter is packaged inside the image, the same container also runs
+> unchanged on Amazon ECS, Amazon EKS, or a local Docker host (`docker run -p
+> 8000:8000` below) — but in those deployments traffic goes straight to your app
+> and the guard is not present. `/snapstart/before` and `/snapstart/after` are
+> state-mutating (this example closes and re-establishes the connection pool), so
+> outside Lambda you must not expose them publicly, or protect them yourself.
 
 ## Pre-requisites
 

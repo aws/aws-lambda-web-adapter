@@ -1352,10 +1352,6 @@ impl Adapter<HttpConnector, Body> {
         let mut app_url = self.domain.clone();
         app_url.set_path(path);
 
-        // Block external traffic to the SnapStart hook paths. These routes are
-        // control-plane operations driven only by the adapter's own hook calls
-        // (which target `domain` directly and never reach this function).
-        //
         // The match is strict and fail-closed: it canonicalizes the outbound path
         // (percent-decode, collapse `//`/`.`/`..`, case-fold) so that every
         // spelling the downstream app router would resolve to the hook route is
