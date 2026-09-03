@@ -759,11 +759,30 @@ fn hook_target(domain: &Url, configured: &Option<String>) -> Result<Option<Vec<S
 /// outright (400) or decodes it leniently to something containing a literal `%` or
 /// U+FFFD, and neither can equal a `%`-free route. Passing through is what keeps a
 /// request like `/reports/100%` from taking a false 403 under an unrelated hook.
+///
+/// Single-target convenience form, used by the tests; production goes through
+/// [`matches_any_hook_path`] so the request path is canonicalized only once.
+#[cfg(test)]
 fn matches_hook_path(want: &Option<Vec<String>>, outbound_request_path: &str) -> bool {
-    match want {
-        None => false,
-        Some(want_segments) => canonicalize_hook_path(outbound_request_path).is_some_and(|got| &got == want_segments),
+    matches_any_hook_path(&[want], outbound_request_path)
+}
+
+/// [`matches_hook_path`] against several targets, canonicalizing the request path
+/// **once**.
+///
+/// This runs on every invocation, and both examples plus the guide configure both
+/// hooks — so calling the single-target form twice would repeat the percent-decode,
+/// control-byte filter, split and per-segment `to_ascii_lowercase` (and their
+/// allocations) for an identical result. Costs nothing when no hook is configured:
+/// the all-`None` check short-circuits before canonicalizing.
+fn matches_any_hook_path(wants: &[&Option<Vec<String>>], outbound_request_path: &str) -> bool {
+    if wants.iter().all(|w| w.is_none()) {
+        return false;
     }
+    let Some(got) = canonicalize_hook_path(outbound_request_path) else {
+        return false; // undecidable: not the hook, passes through
+    };
+    wants.iter().any(|w| w.as_ref().is_some_and(|want| want == &got))
 }
 
 /// The Lambda Web Adapter.
@@ -894,15 +913,37 @@ fn base_client_pooling() -> Pooling {
     }
 }
 
-/// Reads a whole-seconds `Duration` from environment variable `name`, falling
-/// back to `default_secs` when the var is unset or does not parse as `u64`.
-/// Surrounding whitespace is tolerated.
+/// Reads a `Duration` in seconds from environment variable `name`, falling back to
+/// `default_secs` when the var is unset or unusable. Surrounding whitespace is
+/// tolerated.
+///
+/// Accepts fractional seconds (`0.5`), matching
+/// [`readiness_check_timeout_from_env`] — the two knobs are siblings and taking
+/// different numeric formats would be a trap. A value that is set but unusable (a
+/// stray unit suffix like `30s`, non-numeric, negative, NaN, infinity, or an
+/// overflowing magnitude) emits a `warn!` before falling back, for the same reason
+/// its sibling does: a set value silently becoming the default is the opposite of
+/// the operator's intent, and silence makes the misconfiguration invisible.
 fn duration_secs_from_env(name: &str, default_secs: u64) -> Duration {
-    let secs = env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(default_secs);
-    Duration::from_secs(secs)
+    let default = Duration::from_secs(default_secs);
+    let Ok(raw) = env::var(name) else {
+        return default; // unset: silent, this is the normal case
+    };
+    let trimmed = raw.trim();
+    match trimmed.parse::<f64>().map(Duration::try_from_secs_f64) {
+        Ok(Ok(d)) => d,
+        // Negative, NaN, infinite, or beyond Duration's range.
+        Ok(Err(_)) | Err(_) => {
+            tracing::warn!(
+                variable = %name,
+                value = %trimmed,
+                default = ?default,
+                "environment variable is set but is not a usable number of seconds \
+                 (e.g. use `4` or `0.5`, not `4s`); falling back to the default"
+            );
+            default
+        }
+    }
 }
 
 /// Reads the inner-app connection pool idle timeout from
@@ -998,6 +1039,9 @@ impl Adapter<HttpConnector, Body> {
     /// Returns an error if:
     /// - The configured host, port, or readiness check path contain invalid URL characters
     /// - TCP protocol is configured but the URL is missing host or port
+    /// - A SnapStart hook path cannot be guarded: it is not canonicalizable, its
+    ///   decoded form contains a literal `%`, it collapses to the application root,
+    ///   or it resolves to the same route as `AWS_LWA_PASS_THROUGH_PATH`
     ///
     /// # Examples
     ///
@@ -1049,6 +1093,29 @@ impl Adapter<HttpConnector, Body> {
         // starting up with a state-mutating route left externally reachable.
         let hook_target_before_checkpoint = hook_target(&domain, &snapstart_before_checkpoint_path)?;
         let hook_target_after_restore = hook_target(&domain, &snapstart_after_restore_path)?;
+
+        // A hook path that resolves to the same route as the pass-through path is
+        // unguardable in a different way: `fetch_response` rewrites the path to
+        // `pass_through_path` for a PassThrough POST *before* the guard runs, so every
+        // non-HTTP trigger event would canonicalize onto the hook route and get a 403
+        // instead of reaching the app. Fail here rather than silently swallowing that
+        // whole class of events with only a per-invocation warning.
+        let pass_through_target = hook_target(&domain, &Some(options.pass_through_path.clone()))?;
+        for (configured, target) in [
+            (&snapstart_before_checkpoint_path, &hook_target_before_checkpoint),
+            (&snapstart_after_restore_path, &hook_target_after_restore),
+        ] {
+            if target.is_some() && *target == pass_through_target {
+                return Err(Error::from(format!(
+                    "SnapStart hook path {:?} resolves to the same route as the pass-through path \
+                     {:?} (AWS_LWA_PASS_THROUGH_PATH). Non-HTTP trigger events are rewritten onto \
+                     that path before the hook guard runs, so every such event would be rejected \
+                     with 403 instead of reaching your application. Choose a different hook path.",
+                    configured.as_deref().unwrap_or_default(),
+                    options.pass_through_path
+                )));
+            }
+        }
 
         // Validate TCP protocol requirements
         if options.readiness_check_protocol == Protocol::Tcp {
@@ -1472,9 +1539,10 @@ impl Adapter<HttpConnector, Body> {
         // hook route, because `hook_target` rejects any route containing a literal
         // `%`. See `matches_hook_path`.
         let outbound_path = app_url.path();
-        if matches_hook_path(&self.hook_target_before_checkpoint, outbound_path)
-            || matches_hook_path(&self.hook_target_after_restore, outbound_path)
-        {
+        if matches_any_hook_path(
+            &[&self.hook_target_before_checkpoint, &self.hook_target_after_restore],
+            outbound_path,
+        ) {
             tracing::warn!(path = %outbound_path, "rejecting external request to SnapStart hook path");
             return Ok(Response::builder()
                 .status(StatusCode::FORBIDDEN)
@@ -1655,9 +1723,23 @@ mod tests {
         std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "  15  ");
         assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(15));
 
-        // Unparseable -> default 4s.
-        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "not-a-number");
-        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(4));
+        // Fractional seconds are accepted, matching the sibling
+        // AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS. Previously `0.5` failed to parse
+        // as u64 and silently became the 4s default.
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "0.5");
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_millis(500));
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "4.5");
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_millis(4500));
+
+        // Genuinely unusable values still fall back to the default (and now warn).
+        for bad in ["not-a-number", "30s", "-1", "NaN", "inf", "1e400"] {
+            std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, bad);
+            assert_eq!(
+                pool_idle_timeout_from_env(),
+                Duration::from_secs(4),
+                "{bad:?} must fall back to the default"
+            );
+        }
 
         std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
     }
@@ -2971,5 +3053,54 @@ mod tests {
             .expect("Adapter::new must reject a hook path that collapses to the root");
         let msg = err.to_string();
         assert!(msg.contains("/.."), "error must name the offending path, got: {msg}");
+    }
+
+    /// A hook path that collides with `AWS_LWA_PASS_THROUGH_PATH` must be rejected at
+    /// init, because the pass-through rewrite happens BEFORE the guard.
+    ///
+    /// Regression for the bot finding: `fetch_response` rewrites `path` to
+    /// `pass_through_path` for a `RequestContext::PassThrough` POST, and only then
+    /// runs the guard on the rewritten path. So configuring the hook at `/events`
+    /// (the default pass-through path) makes EVERY non-HTTP trigger event canonicalize
+    /// onto the guarded route and get a 403 instead of reaching the app — silently,
+    /// with only a per-invocation `warn!`. Init-time validation already exists for the
+    /// other unguardable hook paths, so this belongs there too.
+    #[test]
+    fn test_adapter_new_fails_when_hook_path_collides_with_pass_through_path() {
+        // The default pass-through path is `/events`.
+        for hook in ["/events", "/Events", "/events/", "/./events", "/%65vents"] {
+            let options = AdapterOptions {
+                snapstart_after_restore_path: Some(hook.to_string()),
+                ..Default::default()
+            };
+            let err = Adapter::new(&options).err().unwrap_or_else(|| {
+                panic!("hook path {hook:?} collides with the pass-through path and must be rejected")
+            });
+            let msg = err.to_string();
+            assert!(
+                msg.contains("pass-through") || msg.contains("AWS_LWA_PASS_THROUGH_PATH"),
+                "error should explain the pass-through collision, got: {msg}"
+            );
+        }
+
+        // A custom pass-through path moves the collision with it.
+        let options = AdapterOptions {
+            pass_through_path: "/queue".to_string(),
+            snapstart_after_restore_path: Some("/events".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            Adapter::new(&options).is_ok(),
+            "/events must be fine once the pass-through path is elsewhere"
+        );
+        let options = AdapterOptions {
+            pass_through_path: "/queue".to_string(),
+            snapstart_after_restore_path: Some("/queue".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            Adapter::new(&options).is_err(),
+            "the collision follows the configured value"
+        );
     }
 }

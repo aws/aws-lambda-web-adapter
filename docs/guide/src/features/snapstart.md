@@ -31,10 +31,11 @@ State captured in a snapshot is shared across every restored environment. Two cl
 
 The hook paths are control-plane operations. External requests (via API Gateway or ALB) that target a configured hook path receive `403 Forbidden` and are never forwarded to your application. The guard matches the hook route strictly: it canonicalizes both the configured path and the incoming request path (percent-decoding, collapsing `//`, `.` and `..` segments, and comparing case-insensitively) before comparing, so alternate spellings that resolve to the same route are blocked too. Choose paths your normal application traffic does not use (for example, `/snapstart/before` and `/snapstart/after`).
 
-Two kinds of value are rejected at startup, because the adapter cannot guard the route they name. In both cases initialization fails with an error naming the offending path, rather than running with a state-mutating route left reachable:
+Three kinds of value are rejected at startup, because the adapter cannot guard the route they name. In each case initialization fails with an error naming the offending path, rather than running with a state-mutating route left reachable:
 
 - **A path whose decoded form contains a percent sign** (for example `/snapstart/after%25`, which decodes to `/snapstart/after%`), or a malformed `%` escape (a trailing `%`, or `%zz`). Web frameworks disagree on how to route these — some reject them outright, others decode them leniently — so the adapter cannot guarantee it blocks every spelling that reaches the route, and a partially protected hook path is worse than an obviously invalid one. Percent-encoding that decodes to an ordinary path is fine (`/snapstart/%61fter` is accepted and guarded as `/snapstart/after`), but a plain unencoded path is clearest.
 - **A path that collapses to the application root** (`/`, `//`, `/..`, `/.`, `/foo/..`, `/%2f`, …). Guarding the root would return `403` for every request to `/`, so the guard cannot cover it — and the hook would still `POST` to `/` on every lifecycle event, failing the phase on any application that does not handle `POST /`. Use a dedicated path instead.
+- **A path that resolves to the same route as `AWS_LWA_PASS_THROUGH_PATH`** (default `/events`). Non-HTTP trigger events are rewritten onto the pass-through path before the guard runs, so every such event would be answered with `403` instead of reaching your application.
 
 Leaving a hook variable unset (or empty) is different from either: it simply means that hook does not fire.
 
