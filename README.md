@@ -109,6 +109,13 @@ that timeout fails.
 > Gateway or ALB) that target a configured hook path receive `403 Forbidden` and
 > are never forwarded to your application, so choose paths your normal traffic
 > does not use.
+>
+> **Warning:** that guard exists only while the adapter is in the request path —
+> that is, when your application runs on Lambda behind the adapter. The hook routes
+> are ordinary application routes that mutate state, so if you run the same image
+> or application **without** the adapter (Amazon ECS, Amazon EKS, a local Docker
+> host), they are reachable and unauthenticated. Don't expose them publicly in
+> those deployments, or protect them yourself.
 
 See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a complete, deployable application.
 
