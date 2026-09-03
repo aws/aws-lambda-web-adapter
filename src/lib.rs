@@ -272,16 +272,16 @@ impl From<&str> for LambdaInvokeMode {
 /// // Use defaults from environment variables
 /// let options = AdapterOptions::default();
 ///
-/// // Or configure manually. `AdapterOptions` is `#[non_exhaustive]`, so start
-/// // from `Default` and set the fields you need rather than a struct literal.
-/// let mut options = AdapterOptions::default();
-/// options.host = "127.0.0.1".to_string();
-/// options.port = "3000".to_string();
-/// options.readiness_check_path = "/health".to_string();
-/// options.readiness_check_protocol = Protocol::Http;
-/// options.invoke_mode = LambdaInvokeMode::ResponseStream;
+/// // Or configure manually
+/// let options = AdapterOptions {
+///     host: "127.0.0.1".to_string(),
+///     port: "3000".to_string(),
+///     readiness_check_path: "/health".to_string(),
+///     readiness_check_protocol: Protocol::Http,
+///     invoke_mode: LambdaInvokeMode::ResponseStream,
+///     ..Default::default()
+/// };
 /// ```
-#[non_exhaustive]
 pub struct AdapterOptions {
     /// Host address where the web application is listening.
     /// Default: `127.0.0.1`

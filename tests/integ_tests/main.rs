@@ -125,11 +125,13 @@ async fn test_http_readiness_check() {
     });
 
     // Prepare adapter configuration
-    let mut options = AdapterOptions::default();
-    options.host = app_server.host();
-    options.port = app_server.port().to_string();
-    options.readiness_check_port = app_server.port().to_string();
-    options.readiness_check_path = "/healthcheck".to_string();
+    let options = AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
+    };
 
     // Initialize adapter and do readiness check
     let mut adapter = Adapter::new(&options).expect("Failed to create adapter");
@@ -152,13 +154,12 @@ async fn test_http_basic_request() {
     });
 
     // Initialize adapter
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -193,13 +194,12 @@ async fn test_http_headers() {
     });
 
     // Initialize adapter and do readiness check
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -239,13 +239,12 @@ async fn test_http_path_encoding() {
     });
 
     // Initialize adapter and do readiness check
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -283,13 +282,12 @@ async fn test_http_query_params() {
     });
 
     // Initialize adapter
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -336,13 +334,12 @@ async fn test_http_post_put_delete() {
     });
 
     // Initialize adapter
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -420,13 +417,12 @@ async fn test_http_request_body_forwarded() {
     });
 
     // Initialize adapter
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -481,14 +477,13 @@ async fn test_http_compress() {
     });
 
     // Initialize adapter
-    let adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.compression = true;
-        o
+    let adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        compression: true,
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -531,14 +526,13 @@ async fn test_http_compress_disallowed_type() {
     });
 
     // Initialize adapter
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.compression = true;
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        compression: true,
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -584,14 +578,13 @@ async fn test_http_compress_already_compressed() {
     });
 
     // Initialize adapter
-    let adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.compression = true;
-        o
+    let adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        compression: true,
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -638,13 +631,12 @@ async fn test_http_context_headers() {
     });
 
     // Initialize adapter and do readiness check
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -690,13 +682,12 @@ async fn test_http_content_encoding_suffix() {
     });
 
     // Initialize adapter and do readiness check
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -734,14 +725,13 @@ async fn test_http_error_status_codes() {
     });
 
     // Initialize adapter with error status codes
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.error_status_codes = Some(vec![500, 502, 503, 504]);
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        error_status_codes: Some(vec![500, 502, 503, 504]),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -770,14 +760,13 @@ async fn test_http_authorization_source() {
     });
 
     // Initialize adapter
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.authorization_source = Some("auth-token".to_string());
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        authorization_source: Some("auth-token".to_string()),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -830,13 +819,12 @@ async fn test_http_context_multi_headers() {
     });
 
     // Initialize adapter and do readiness check
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -879,14 +867,13 @@ async fn test_http_base_path_stripping() {
     });
 
     // Initialize adapter with base_path set
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.base_path = Some("/prod".to_string());
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        base_path: Some("/prod".to_string()),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -913,14 +900,13 @@ async fn test_http_base_path_no_match() {
         then.status(200).body("No stripping");
     });
 
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.base_path = Some("/prod".to_string());
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        base_path: Some("/prod".to_string()),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -947,14 +933,13 @@ async fn test_http_base_path_root_after_strip() {
         then.status(200).body("Root");
     });
 
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.base_path = Some("/prod".to_string());
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        base_path: Some("/prod".to_string()),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1046,14 +1031,13 @@ async fn test_http_authorization_source_missing_header() {
     });
 
     // Configure adapter with authorization_source pointing to a header that won't exist
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.authorization_source = Some("x-missing-auth".to_string());
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        authorization_source: Some("x-missing-auth".to_string()),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1079,14 +1063,13 @@ async fn test_http_error_status_codes_non_matching() {
     });
 
     // Configure error_status_codes with 500-504 only — 404 should pass through normally
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.error_status_codes = Some(vec![500, 502, 503, 504]);
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        error_status_codes: Some(vec![500, 502, 503, 504]),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1118,14 +1101,13 @@ async fn test_http_async_init_ready_at_init() {
     });
 
     // Initialize adapter with async_init enabled
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o.async_init = true;
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        async_init: true,
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1155,14 +1137,13 @@ async fn test_http_tcp_readiness_check() {
     let app_server = MockServer::start();
 
     // Initialize adapter with TCP readiness check
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/".to_string();
-        o.readiness_check_protocol = Protocol::Tcp;
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/".to_string(),
+        readiness_check_protocol: Protocol::Tcp,
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1248,13 +1229,12 @@ async fn test_concurrent_request_forwarding() {
         then.status(200).body("response_b");
     });
 
-    let adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/".to_string();
-        o
+    let adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1294,13 +1274,12 @@ async fn test_concurrent_post_body_isolation() {
         then.status(200).body("ack_b");
     });
 
-    let adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/".to_string();
-        o
+    let adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1363,13 +1342,12 @@ async fn test_tenant_id_propagated_from_client_context() {
         then.status(200).body("OK");
     });
 
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 
@@ -1393,13 +1371,12 @@ async fn test_no_tenant_id_header_when_absent() {
         then.status(200).body("OK");
     });
 
-    let mut adapter = Adapter::new(&{
-        let mut o = AdapterOptions::default();
-        o.host = app_server.host();
-        o.port = app_server.port().to_string();
-        o.readiness_check_port = app_server.port().to_string();
-        o.readiness_check_path = "/healthcheck".to_string();
-        o
+    let mut adapter = Adapter::new(&AdapterOptions {
+        host: app_server.host(),
+        port: app_server.port().to_string(),
+        readiness_check_port: app_server.port().to_string(),
+        readiness_check_path: "/healthcheck".to_string(),
+        ..Default::default()
     })
     .expect("Failed to create adapter");
 

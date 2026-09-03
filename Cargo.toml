@@ -15,9 +15,13 @@ categories = ["web-programming::http-server"]
 readme = "README.md"
 exclude = ["examples"]
 # Lambda Web Adapter ships as the `lambda-adapter` binary (packaged as a Lambda
-# layer / container-copied extension), not as a published library. The crate is
-# not published to crates.io, so the `lib` target is an internal implementation
-# detail of the binary and tests — it has no external API-stability contract.
+# layer / container-copied extension), not as a library. This stops publishing the
+# crate to crates.io: the `lib` target is an internal implementation detail of the
+# binary and tests, with no external API-stability contract.
+#
+# Note for crates.io consumers: earlier `0.x` / `1.0.0-rc1` releases remain
+# available and unchanged; they are simply the last published versions. New
+# development ships only as the binary/layer.
 publish = false
 
 [dependencies]

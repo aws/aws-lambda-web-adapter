@@ -9,15 +9,15 @@
   60-second timeout. After restore the adapter refreshes its own HTTP client and
   re-runs the readiness check before admitting traffic, and it rejects external
   traffic to the hook paths with 403.
-  - The crate is now `publish = false`: Lambda Web Adapter ships as the
-    `lambda-adapter` binary (a Lambda layer / copied extension), not as a published
-    library, so the `lib` target has no external API-stability contract. The
-    internal changes SnapStart required — the `tower::Service` impl's `Response` is
-    now `Response<BoxBody<Bytes, Error>>` (was `Response<Incoming>`),
-    `check_init_health` now returns `Result`, and `AdapterOptions` is
-    `#[non_exhaustive]` (construct it from `AdapterOptions::default()`) — therefore
-    do not affect any published API. `Bytes` and `BoxBody` are re-exported for
-    convenience of in-repo `Service` users.
+  - The crate now stops publishing to crates.io (`publish = false`): Lambda Web
+    Adapter ships as the `lambda-adapter` binary (a Lambda layer / copied
+    extension), not as a library, so the `lib` target has no external
+    API-stability contract. The internal changes SnapStart required — the
+    `tower::Service` impl's `Response` is now `Response<BoxBody<Bytes, Error>>`
+    (was `Response<Incoming>`) and `check_init_health` now returns `Result` —
+    therefore do not affect any published API. `Bytes` and `BoxBody` are
+    re-exported for convenience of in-repo `Service` users. Existing crates.io
+    consumers keep the last published release (`1.0.0-rc1`) unchanged.
 - Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive (in
   whole seconds) of the adapter's HTTP connection to your app. Default: 4 seconds.
 - Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check
