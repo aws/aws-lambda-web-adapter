@@ -876,6 +876,25 @@ fn build_client(idle_timeout: Duration, pooling: Pooling) -> Client<HttpConnecto
     builder.build(HttpConnector::new())
 }
 
+/// Builds the client used to talk to the Lambda Runtime API (RAPID) for extension
+/// registration.
+///
+/// Idle pooling is disabled. Under SnapStart, a connection parked here is captured in
+/// the snapshot and dead after restore — the same hazard `lambda_runtime` handles by
+/// calling `reset_pool()` on its own RAPID client in the restore lifecycle. Nothing
+/// resets or re-establishes this one, and [`Adapter::register_default_extension`]
+/// terminates the process with `exit(1)` if its request fails, so handing out a dead
+/// connection would kill a restored environment before it serves anything.
+///
+/// Pooling costs nothing to give up here: this client issues exactly two requests —
+/// `register`, then the long poll for the first extension event — and the long poll's
+/// own in-flight connection is unaffected by the idle-pool setting.
+fn runtime_api_client() -> Client<HttpConnector, Body> {
+    let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
+    builder.pool_max_idle_per_host(0);
+    builder.build(HttpConnector::new())
+}
+
 /// Whether a client may keep idle connections alive for reuse. See [`build_client`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pooling {
@@ -1211,7 +1230,7 @@ impl Adapter<HttpConnector, Body> {
             Some(captured) => captured.clone().unwrap_or_else(|| "127.0.0.1:9001".to_string()),
             None => env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string()),
         };
-        let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(HttpConnector::new());
+        let client = runtime_api_client();
 
         let register_req = hyper::Request::builder()
             .method(Method::POST)
@@ -1818,6 +1837,26 @@ mod tests {
             used, 1,
             "the post-restore client must honor the configured idle keep-alive and reuse \
              its connection, but it opened {used} connections for 3 requests"
+        );
+    }
+
+    /// The Lambda Runtime API client must not retain an idle connection either.
+    ///
+    /// `register_extension_internal` built a default-pooled client. Under SnapStart any
+    /// connection it parks is captured in the snapshot and dead after restore — the
+    /// same hazard `lambda_runtime`'s own restore path handles by calling
+    /// `reset_pool()` on its RAPID client. Nothing re-establishes or resets this one,
+    /// and its failure path is `std::process::exit(1)`, so a reused dead connection
+    /// would terminate the restored environment. It also has nothing to gain from
+    /// pooling: it makes exactly two requests, `register` and then the long poll for
+    /// the first extension event.
+    #[tokio::test]
+    async fn test_runtime_api_client_does_not_retain_connections() {
+        let retained = connection_retained_after_request(&runtime_api_client()).await;
+        assert!(
+            !retained,
+            "the Runtime API client must drop its connection rather than park a socket \
+             that a snapshot would capture"
         );
     }
 
