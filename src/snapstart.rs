@@ -148,6 +148,20 @@ impl SnapStartResource for SnapStartHooks {
             //    subsequent invocations) use post-restore connections rather than stale
             //    pre-snapshot ones. If one is somehow already published, adopt it, so
             //    steps 2 and 3 always validate the client invocations will use.
+            //
+            //    Pooling is ENABLED here even though `Adapter::new` disables it under
+            //    SnapStart (see `base_client_pooling`), and the disagreement is
+            //    deliberate. That restriction exists because `CLOCK_MONOTONIC` does not
+            //    advance across the snapshot gap — measured on a deployed SnapStart
+            //    container function, 0.54s of monotonic time for 161s of wall time — so
+            //    hyper's `elapsed > idle_timeout` test cannot be trusted for an entry
+            //    pooled before the boundary. This client is built AFTER the restore, so
+            //    every entry it holds is post-boundary, and monotonic time tracks wall
+            //    time normally from here on (measured: +6.079s/+6.059s monotonic
+            //    against +6.1s/+6.0s wall, with idle gaps beyond the keep-alive
+            //    expiring cleanly). Keeping the pool on is therefore both safe and the
+            //    only way `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` has any effect on the
+            //    invocations that actually serve traffic.
             let fresh = Arc::new(build_client(self.pool_idle_timeout, Pooling::Enabled));
             let fresh = Self::publish_or_adopt(&self.restored_client, fresh);
 

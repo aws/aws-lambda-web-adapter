@@ -908,11 +908,21 @@ enum Pooling {
 /// before a SnapStart snapshot is taken.
 ///
 /// Disabled under SnapStart, so no connection can be captured in the snapshot and
-/// handed out — dead — after a restore (hyper#3810). `run()` additionally rebuilds a
-/// fresh client in the after-restore hook, but keeping this one safe by construction
-/// also protects a consumer driving the `Service` impl directly, who never triggers
-/// that hook — and that consumer is the only one for whom this is the sole
-/// protection, so it must not depend on the post-restore clock.
+/// handed out — dead — after a restore (hyper#3810, rust-lang/rust#79462).
+///
+/// Why the pool must be *off* rather than expiry-bounded, measured on a deployed
+/// SnapStart container function: `CLOCK_MONOTONIC` does not advance across the
+/// snapshot gap. One restore showed the monotonic clock moving **0.54s** while wall
+/// time moved **161s**. hyper decides reuse with
+/// `now.saturating_duration_since(idle_at) > idle_timeout`, so a connection pooled
+/// before the snapshot reads as half a second idle after restore no matter how long
+/// the snapshot actually sat — fresh under any sane timeout, and dead. No idle
+/// timeout, including `Duration::ZERO`, can fix that (`ZERO > ZERO` is false).
+///
+/// `run()` additionally rebuilds a fresh client in the after-restore hook, but
+/// keeping this one safe by construction also protects a consumer driving the
+/// `Service` impl directly, who never triggers that hook — and that consumer has no
+/// other protection, so it must not depend on the clock.
 ///
 /// The cost is that a pre-snapshot readiness poll reconnects on every 10ms attempt
 /// (measured: 27 connections per 300ms of polling, versus 1 with keep-alive). That is
@@ -924,6 +934,14 @@ enum Pooling {
 /// pool starts empty and therefore cannot hold a snapshotted connection. That is what
 /// makes `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` effective for the invocations that
 /// actually serve traffic, instead of a no-op for the life of the environment.
+///
+/// The two sites deliberately disagree — pooling off here, on in `after_restore` —
+/// and that is sound because the clock anomaly is confined to the snapshot boundary.
+/// Measured after restore on the same deployment, `CLOCK_MONOTONIC` tracks wall time
+/// exactly (+6.079s / +6.059s monotonic against +6.1s / +6.0s wall), and requests
+/// separated by idle gaps longer than the configured 4s keep-alive all succeeded. A
+/// client built after restore holds only post-restore entries, so its expiry
+/// accounting is reliable; this one may hold pre-boundary entries, so its is not.
 fn base_client_pooling() -> Pooling {
     if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
         Pooling::Disabled
