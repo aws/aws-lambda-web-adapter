@@ -30,6 +30,12 @@
 
 ### Bug Fixes
 
+- Restore per-invocation tracing context (`requestId` / `xrayTraceId`) on the
+  adapter's log lines. The runtime is built via `lambda_http::runtime_concurrent`
+  (needed to register the SnapStart hooks), which — unlike the free
+  `lambda_runtime::run_concurrent` — does not add `TracingLayer`; the adapter now
+  applies it explicitly, so per-request log fields (including the hook-path 403
+  warning) are no longer dropped.
 - Normalize the configured SnapStart hook path through the same `Url::set_path`
   transformation used to call the hook, so the guard protects exactly the route the
   application serves. Previously the guard canonicalized the raw configured string

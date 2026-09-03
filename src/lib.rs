@@ -809,19 +809,55 @@ fn pool_idle_timeout_from_env() -> Duration {
 
 /// Reads the readiness-check timeout from
 /// [`ENV_READINESS_CHECK_TIMEOUT_SECONDS`] (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
-/// Accepts fractional seconds (e.g. `0.5`). Returns `None` — meaning the readiness
-/// wait is unbounded (historical behavior) — when the value is unset, unparseable,
-/// non-positive (including `0`, which would otherwise expire instantly and fail
-/// every check), or not representable as a `Duration` (NaN, infinity, negative, or
-/// overflow). `Duration::try_from_secs_f64` rejects all the panic cases of
-/// `from_secs_f64` in one step, so there is no separate finite/range guard to keep
-/// in sync.
+/// Accepts fractional seconds (e.g. `0.5`). Returns `None` — an unbounded readiness
+/// wait (historical behavior) — in three cases, only one of which is silent:
+/// * **unset**: silent (the default).
+/// * **`<= 0` (including `0`)**: silent and intentional — a zero bound would expire
+///   instantly and fail every check, so it is treated as "no bound".
+/// * **set but unusable** (a stray suffix like `10s`, non-numeric, NaN, infinity,
+///   negative, or an overflowing magnitude): emits a `warn!` before falling back,
+///   because silently ignoring a misconfigured bound would let a sync-init cold
+///   start hang to the Lambda function timeout with no diagnostic.
 fn readiness_check_timeout_from_env() -> Option<Duration> {
-    env::var(ENV_READINESS_CHECK_TIMEOUT_SECONDS)
-        .ok()
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
-        .filter(|d| !d.is_zero())
+    // Unset -> silent unbounded (historical default).
+    let raw = env::var(ENV_READINESS_CHECK_TIMEOUT_SECONDS).ok()?;
+    let trimmed = raw.trim();
+
+    // Parse as fractional seconds; a value that does not parse as a finite,
+    // representable, positive Duration is REJECTED. Distinguish two rejection kinds:
+    //   * `<= 0` (including `0`) is an intentional, documented choice: treat as
+    //     unbounded silently (a zero bound would expire instantly and fail every
+    //     check), so no warning.
+    //   * anything else set-but-unusable (a stray suffix like `10s`, `abc`, NaN,
+    //     infinity, negative, or an overflowing magnitude) is almost certainly a
+    //     misconfiguration. Silently falling back to unbounded would make a
+    //     sync-init cold start hang to the Lambda function timeout with no signal,
+    //     so WARN and then fall back.
+    match trimmed.parse::<f64>() {
+        Ok(secs) if secs <= 0.0 => None, // intentional unbounded, no warning
+        Ok(secs) => match Duration::try_from_secs_f64(secs) {
+            Ok(d) if !d.is_zero() => Some(d),
+            // secs > 0 but not representable as a Duration (NaN is caught by the
+            // <= 0.0 arm not matching; this covers infinity / overflow).
+            _ => {
+                tracing::warn!(
+                    value = %trimmed,
+                    "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS is set but out of range; \
+                     ignoring it and waiting for readiness without a timeout"
+                );
+                None
+            }
+        },
+        Err(_) => {
+            tracing::warn!(
+                value = %trimmed,
+                "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS is set but not a number of seconds \
+                 (e.g. use `10` or `0.5`, not `10s`); ignoring it and waiting for readiness \
+                 without a timeout"
+            );
+            None
+        }
+    }
 }
 
 impl Adapter<HttpConnector, Body> {
@@ -1153,6 +1189,14 @@ impl Adapter<HttpConnector, Body> {
     ///
     /// Each `run()` arm builds a different runtime type (buffered vs. streaming),
     /// so the shared "register, then run" tail lives here as a generic helper.
+    ///
+    /// Applies [`TracingLayer`](lambda_http::lambda_runtime::layers::TracingLayer)
+    /// before registering the SnapStart hooks. The free
+    /// `lambda_runtime::run_concurrent` helper adds this layer internally, but this
+    /// crate builds the runtime via `lambda_http::runtime_concurrent` (to attach
+    /// `register_snapstart_resource`), which does not — so without it every
+    /// per-invocation adapter log line (including the SnapStart hook-path 403 warn)
+    /// would lose its `requestId` / `xrayTraceId` span fields.
     async fn register_and_run<S>(
         runtime: lambda_http::lambda_runtime::Runtime<S>,
         hooks: Arc<snapstart::SnapStartHooks>,
@@ -1164,7 +1208,11 @@ impl Adapter<HttpConnector, Body> {
             + 'static,
         S::Future: Send,
     {
-        runtime.register_snapstart_resource(hooks).run_concurrent().await
+        runtime
+            .layer(lambda_http::lambda_runtime::layers::TracingLayer::new())
+            .register_snapstart_resource(hooks)
+            .run_concurrent()
+            .await
     }
 
     /// Applies runtime API proxy configuration from environment variables.
