@@ -33,37 +33,6 @@
 
 ### Bug Fixes
 
-- Restore per-invocation tracing context (`requestId` / `xrayTraceId`) on the
-  adapter's log lines. The runtime is built via `lambda_http::runtime_concurrent`
-  (needed to register the SnapStart hooks), which — unlike the free
-  `lambda_runtime::run_concurrent` — does not add `TracingLayer`; the adapter now
-  applies it explicitly, so per-request log fields (including the hook-path 403
-  warning) are no longer dropped.
-- Close a hook-guard bypass for request paths containing an encoded control byte
-  (e.g. `POST /snapstart/after%0A`). The guard previously treated a control byte as
-  "undecidable" and passed the request through, but a router such as Starlette
-  still resolves the surrounding path to the hook route (Python's `$` matches
-  immediately before a trailing newline), leaving the state-mutating hook route
-  externally reachable. Control bytes are now stripped during canonicalization so
-  the path collapses onto the hook route and is blocked; a malformed percent-escape
-  (e.g. `/reports/100%`) still passes through, so no false 403 is introduced.
-- Restore `pool_max_idle_per_host(0)` on the inner-app HTTP client under SnapStart
-  (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) so the base client never retains an
-  idle connection that would be captured in the snapshot and handed out dead after
-  a restore. `run()` also rebuilds a fresh client in the after-restore hook; this
-  keeps the base client safe-by-construction for a consumer driving the `Service`
-  directly (who never triggers that hook), at negligible cost (localhost reconnect).
-- Normalize the configured SnapStart hook path through the same `Url::set_path`
-  transformation used to call the hook, so the guard protects exactly the route the
-  application serves. Previously the guard canonicalized the raw configured string
-  while comparing it against the already-`set_path`-normalized outbound request path;
-  a configured value that `set_path` rewrites (e.g. `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/snapstart\after`,
-  which the app serves as `/snapstart/after`) left the actual route externally
-  reachable. Both sides are now derived from `set_path`, closing the divergence.
-  The canonicalization also strips matrix / path parameters (everything from the
-  first `;` in a segment), so spellings like `/snapstart/after;x=1` or
-  `;jsessionid=…` — which Spring MVC and servlet containers drop before routing —
-  are blocked too.
 - Fix `AWS_LWA_REMOVE_BASE_PATH` stripping to remove exactly one leading occurrence
   on a path-segment boundary. Previously it used `trim_start_matches`, which stripped
   the prefix repeatedly and byte-wise: with `AWS_LWA_REMOVE_BASE_PATH=/api`,
