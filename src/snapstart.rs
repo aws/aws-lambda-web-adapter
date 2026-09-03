@@ -73,6 +73,32 @@ impl SnapStartHooks {
         }
     }
 
+    /// Publishes `fresh` as the post-restore client, or adopts the one already
+    /// published, returning whichever client invocations will actually use.
+    ///
+    /// `OnceLock::set` fails if the cell is already populated. Discarding that failure
+    /// and carrying on with `fresh` would leave `after_restore` validating a client no
+    /// request can reach: the hook POST and readiness check would report the restore
+    /// healthy while every invocation kept using the earlier client. Returning the
+    /// published client instead removes that divergence rather than reporting it, and
+    /// the `warn!` records the unexpected second lifecycle run.
+    fn publish_or_adopt(
+        cell: &OnceLock<Arc<Client<HttpConnector, Body>>>,
+        fresh: Arc<Client<HttpConnector, Body>>,
+    ) -> Arc<Client<HttpConnector, Body>> {
+        match cell.set(fresh.clone()) {
+            Ok(()) => fresh,
+            Err(_) => {
+                tracing::warn!(
+                    "post-restore client was already published; adopting it so the hook call and \
+                     readiness check validate the client invocations actually use"
+                );
+                // `set` only fails when the cell is populated, so this cannot be None.
+                cell.get().unwrap_or(&fresh).clone()
+            }
+        }
+    }
+
     /// POSTs an empty body to `domain + path` using `client`. A non-2xx
     /// response, a transport error, or exceeding [`HOOK_TIMEOUT`] is an error.
     async fn post_hook(client: &Client<HttpConnector, Body>, domain: &Url, path: &str) -> Result<(), Error> {
@@ -119,10 +145,11 @@ impl SnapStartResource for SnapStartHooks {
     fn after_restore(&self) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             // 1. Publish a fresh client FIRST so the hook POST below (and all
-            //    subsequent invocations) use post-restore connections rather
-            //    than stale pre-snapshot ones. Ignore "already set".
+            //    subsequent invocations) use post-restore connections rather than stale
+            //    pre-snapshot ones. If one is somehow already published, adopt it, so
+            //    steps 2 and 3 always validate the client invocations will use.
             let fresh = Arc::new(build_client(self.pool_idle_timeout, Pooling::Enabled));
-            let _ = self.restored_client.set(fresh.clone());
+            let fresh = Self::publish_or_adopt(&self.restored_client, fresh);
 
             // 2. Notify the app over the fresh client. Failure fails the restore;
             //    the fresh client stays published regardless.
@@ -269,6 +296,39 @@ mod tests {
         assert!(h.after_restore().await.is_ok());
         assert!(h.restored_client.get().is_some(), "fresh client published");
         m.assert();
+    }
+
+    /// When the post-restore client is already published, `after_restore` must run its
+    /// hook POST and readiness check over THAT client — the one invocations use — not
+    /// over a freshly built one nobody can see.
+    ///
+    /// Regression for the bot `[ERROR_HANDLING]` finding: `let _ = ...set(fresh)`
+    /// discarded the "already set" case and then used `fresh` for steps 2 and 3, so a
+    /// second `after_restore` would report the restore healthy on the basis of a client
+    /// the request path never touches, with no signal anywhere. Latent today (the
+    /// runtime drives the lifecycle once) — this pins it so it cannot become real.
+    #[test]
+    fn publish_or_adopt_keeps_the_client_invocations_use() {
+        let cell: OnceLock<Arc<Client<HttpConnector, Body>>> = OnceLock::new();
+        let first = Arc::new(build_client(Duration::from_secs(4), Pooling::Enabled));
+        let adopted = SnapStartHooks::publish_or_adopt(&cell, first.clone());
+        assert!(
+            Arc::ptr_eq(&adopted, &first),
+            "first call publishes and returns its own client"
+        );
+
+        // A second call must adopt the published client and discard its own.
+        let second = Arc::new(build_client(Duration::from_secs(4), Pooling::Enabled));
+        let adopted = SnapStartHooks::publish_or_adopt(&cell, second.clone());
+        assert!(
+            Arc::ptr_eq(&adopted, &first),
+            "second call must return the ALREADY-PUBLISHED client, not its own"
+        );
+        assert!(!Arc::ptr_eq(&adopted, &second));
+        assert!(
+            Arc::ptr_eq(cell.get().unwrap(), &first),
+            "published client is unchanged"
+        );
     }
 
     #[tokio::test]
