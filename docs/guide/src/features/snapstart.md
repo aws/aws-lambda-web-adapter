@@ -31,6 +31,8 @@ State captured in a snapshot is shared across every restored environment. Two cl
 
 The hook paths are control-plane operations. External requests (via API Gateway or ALB) that target a configured hook path receive `403 Forbidden` and are never forwarded to your application. The guard matches the hook route strictly: it canonicalizes both the configured path and the incoming request path (percent-decoding, collapsing `//`, `.` and `..` segments, and comparing case-insensitively) before comparing, so alternate spellings that resolve to the same route are blocked too. Choose paths your normal application traffic does not use (for example, `/snapstart/before` and `/snapstart/after`).
 
+> **Warning:** this 403 guard exists only when the adapter is in the request path — i.e. when your app runs on Lambda behind the adapter. The hook routes are ordinary application routes that mutate state (the examples close and re-establish the connection pool), so if you run the same image or app **without** the adapter (Amazon ECS, Amazon EKS, a local Docker host), those routes are reachable and unauthenticated. In that case, do not expose them publicly, or protect them yourself.
+
 ## Example
 
 ```python

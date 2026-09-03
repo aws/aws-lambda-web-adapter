@@ -596,8 +596,14 @@ fn percent_decode_once(input: &str) -> Option<String> {
 /// the strictness targeted: it only bites paths that canonicalize onto the hook.
 ///
 /// Returns `None` only for genuinely undecidable inputs (a malformed `%` escape,
-/// non-UTF-8 after decoding, or a control/null byte). The caller treats `None`
-/// as "reject" (fail closed).
+/// non-UTF-8 after decoding, or a control/null byte). Because the guard runs on
+/// the already-`set_path`-normalized outbound path, an undecidable path is one the
+/// downstream app router cannot resolve to the hook route either, so
+/// [`matches_hook_path`] treats a `None` **request** path as *not the hook* and
+/// passes it through (see `matches_hook_path` and
+/// `test_matches_hook_path_undecidable_passes_through`). A `None` on the
+/// **configured** side instead falls back to a raw exact-string guard in
+/// [`hook_target`], so a misconfigured hook route stays protected.
 fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
     // Percent-decode a SINGLE pass, mirroring what the downstream app router
     // does. A router decodes exactly once, so `/snapstart/%61fter` reaches the
@@ -1352,11 +1358,12 @@ impl Adapter<HttpConnector, Body> {
         let mut app_url = self.domain.clone();
         app_url.set_path(path);
 
-        // The match is strict and fail-closed: it canonicalizes the outbound path
-        // (percent-decode, collapse `//`/`.`/`..`, case-fold) so that every
-        // spelling the downstream app router would resolve to the hook route is
-        // blocked — not just the exact configured string — and undecidable inputs
-        // (malformed escapes, control bytes) are rejected too. See
+        // The match is strict: it canonicalizes the outbound path (percent-decode,
+        // collapse `//`/`.`/`..`, case-fold) so that every spelling the downstream
+        // app router would resolve to the hook route is blocked — not just the exact
+        // configured string. An undecidable outbound path (malformed escape, control
+        // byte) is one the app router cannot resolve to the hook either, so it is
+        // treated as NOT the hook and passed through rather than 403'd. See
         // `matches_hook_path`.
         let outbound_path = app_url.path();
         if matches_hook_path(&self.hook_target_before_checkpoint, outbound_path)
