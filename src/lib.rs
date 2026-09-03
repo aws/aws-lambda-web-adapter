@@ -814,27 +814,44 @@ pub struct Adapter<C, B> {
 /// Builds the hyper client used to talk to the inner web application.
 ///
 /// Shared by [`Adapter::new`] and the SnapStart after-restore hook so the
-/// post-restore client is built identically to the original. `idle_timeout` is
-/// the idle-connection keep-alive, resolved from
-/// [`AdapterOptions::pool_idle_timeout`] (env `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`,
-/// default 4 seconds).
+/// post-restore client is built identically to the original. `idle_timeout` is the
+/// idle-connection keep-alive, resolved from [`AdapterOptions::pool_idle_timeout`]
+/// (env `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`, default 4 seconds).
 ///
-/// Under SnapStart (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) the client also
-/// sets `pool_max_idle_per_host(0)`, so it never retains an idle connection that
-/// could be captured in the snapshot and handed out — dead — after a restore.
-/// This is defense-in-depth: `run()` additionally rebuilds a fresh client in the
-/// after-restore hook, but keeping the base client safe-by-construction protects
-/// a consumer driving the `Service` directly (who never triggers that hook) at
-/// negligible cost, since the connection is a cheap localhost reconnect. The
-/// configured `idle_timeout` still applies (it is moot when max-idle is 0, but
-/// harmless, and correct if the SnapStart cap is ever lifted).
+/// `Duration::ZERO` disables idle keep-alive entirely: no connection is retained
+/// between requests (measured equivalent to `pool_max_idle_per_host(0)`, including
+/// for back-to-back requests). [`Adapter::new`] uses that for the pre-snapshot
+/// client under SnapStart — see [`base_client_idle_timeout`] — so nothing dead can
+/// be captured in a snapshot. This function itself reads no environment: the caller
+/// decides, so the post-restore rebuild cannot silently inherit the pre-snapshot
+/// restriction.
 fn build_client(idle_timeout: Duration) -> Client<HttpConnector, Body> {
     let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
     builder.pool_idle_timeout(idle_timeout);
-    if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
-        builder.pool_max_idle_per_host(0);
-    }
     builder.build(HttpConnector::new())
+}
+
+/// Idle keep-alive for the client [`Adapter::new`] builds — the one used before a
+/// SnapStart snapshot is taken.
+///
+/// Under SnapStart this is [`Duration::ZERO`], so the pre-snapshot client never
+/// retains an idle connection that could be captured in the snapshot and handed
+/// out — dead — after a restore (hyper#3810). `run()` additionally rebuilds a
+/// fresh client in the after-restore hook, but keeping this one safe by
+/// construction also protects a consumer driving the `Service` impl directly, who
+/// never triggers that hook.
+///
+/// The configured value is NOT lost: it is kept on [`Adapter::pool_idle_timeout`]
+/// and used for the after-restore rebuild, whose pool starts empty and therefore
+/// cannot hold a snapshotted connection. That is what makes
+/// `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` effective for the invocations that actually
+/// serve traffic, instead of being a no-op for the whole life of the environment.
+fn base_client_idle_timeout(configured: Duration) -> Duration {
+    if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
+        Duration::ZERO
+    } else {
+        configured
+    }
 }
 
 /// Reads a whole-seconds `Duration` from environment variable `name`, falling
@@ -922,9 +939,11 @@ impl Adapter<HttpConnector, Body> {
     /// your web application. The idle-connection keep-alive comes from
     /// [`AdapterOptions::pool_idle_timeout`] (`AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`,
     /// default 4 seconds). Under SnapStart
-    /// (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) the client additionally sets
-    /// `pool_max_idle_per_host(0)`, so no idle connection can be captured in the
-    /// snapshot and handed out dead after a restore.
+    /// (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) this client is built with idle
+    /// keep-alive disabled instead, so no connection can be captured in the snapshot
+    /// and handed out dead after a restore; the configured value is retained and
+    /// applied to the client rebuilt in the after-restore hook, which is what serves
+    /// invocations. See [`base_client_idle_timeout`].
     ///
     /// # Arguments
     ///
@@ -949,7 +968,7 @@ impl Adapter<HttpConnector, Body> {
     /// let adapter = Adapter::new(&options).expect("Failed to create adapter");
     /// ```
     pub fn new(options: &AdapterOptions) -> Result<Adapter<HttpConnector, Body>, Error> {
-        let client = build_client(options.pool_idle_timeout);
+        let client = build_client(base_client_idle_timeout(options.pool_idle_timeout));
 
         let schema = "http";
 
@@ -1585,6 +1604,113 @@ mod tests {
         assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(4));
 
         std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
+    }
+
+    /// Serves `n` sequential requests over `client` and returns how many TCP
+    /// connections the server had to accept. One connection means the idle pool
+    /// was reused (keep-alive honored); `n` means every request reconnected.
+    async fn connections_used(client: &Client<HttpConnector, Body>, n: usize) -> usize {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(|_req: hyper::Request<hyper::body::Incoming>| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(String::from("ok")))
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+
+        for _ in 0..n {
+            let req = hyper::Request::builder()
+                .uri(format!("http://{addr}/"))
+                .body(Body::Empty)
+                .unwrap();
+            let resp = client.request(req).await.unwrap();
+            // Drain the body so the connection is eligible to return to the pool.
+            let _ = resp.into_body().collect().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        accepted.load(Ordering::SeqCst)
+    }
+
+    /// `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` must actually take effect on the client
+    /// that serves invocations after a SnapStart restore.
+    ///
+    /// Regression for the bot finding: `build_client` used to apply
+    /// `pool_max_idle_per_host(0)` whenever `AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`,
+    /// and that variable stays set for the whole lifetime of a restored environment.
+    /// Both call sites went through it, so the post-restore client — the one
+    /// `Adapter::client()` returns for every invocation after a restore — never
+    /// retained a connection, making the configured timeout a no-op on exactly the
+    /// functions this feature targets and reconnecting on every single invocation
+    /// (each one a fresh file descriptor, which Lambda limits).
+    ///
+    /// The snapshot hazard only applies to the client built BEFORE the snapshot; a
+    /// client built inside `after_restore` starts with an empty pool and cannot hold
+    /// a snapshotted connection, so it is safe for it to pool normally.
+    #[tokio::test]
+    async fn test_pool_idle_timeout_applies_under_snapstart() {
+        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
+        // This is the call `SnapStartHooks::after_restore` makes.
+        let restored = build_client(Duration::from_secs(4));
+        let used = connections_used(&restored, 3).await;
+        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        assert_eq!(
+            used, 1,
+            "the post-restore client must honor the configured idle keep-alive and reuse \
+             its connection, but it opened {used} connections for 3 requests"
+        );
+    }
+
+    /// The pre-snapshot client must still never retain an idle connection, so nothing
+    /// dead can be captured in the snapshot and handed out after a restore
+    /// (hyper#3810). This also covers a consumer driving the `Service` impl directly,
+    /// who never triggers the after-restore rebuild.
+    ///
+    /// A zero idle timeout is the mechanism: measured equivalent to
+    /// `pool_max_idle_per_host(0)` — no reuse even for back-to-back requests.
+    #[tokio::test]
+    async fn test_adapter_new_client_never_pools_under_snapstart() {
+        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
+        let options = AdapterOptions {
+            pool_idle_timeout: Duration::from_secs(4),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).unwrap();
+        let used = connections_used(&adapter.client, 3).await;
+        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        assert_eq!(
+            used, 3,
+            "the pre-snapshot client must not retain an idle connection, but it reused one \
+             ({used} connections for 3 requests)"
+        );
+        // The configured value is still carried through for the post-restore rebuild.
+        assert_eq!(adapter.pool_idle_timeout, Duration::from_secs(4));
+    }
+
+    /// Without SnapStart nothing changes: keep-alive to the inner app is honored, so
+    /// the safety mechanism above must not cost every other deployment its pooling.
+    #[tokio::test]
+    async fn test_adapter_new_client_pools_without_snapstart() {
+        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        let options = AdapterOptions {
+            pool_idle_timeout: Duration::from_secs(4),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).unwrap();
+        let used = connections_used(&adapter.client, 3).await;
+        assert_eq!(used, 1, "keep-alive must be honored without SnapStart, got {used}");
     }
 
     // All cases share one test because they mutate the same process-global env
