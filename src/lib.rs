@@ -832,52 +832,65 @@ pub struct Adapter<C, B> {
 /// idle-connection keep-alive, resolved from [`AdapterOptions::pool_idle_timeout`]
 /// (env `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`, default 4 seconds).
 ///
-/// `Duration::ZERO` means a pooled connection is never *reused*: hyper's pool stays
-/// enabled (`Config::is_enabled()` is `max_idle_per_host > 0`), so a finished
-/// connection is still parked in the idle map, but `Expiration::expires` compares
-/// `elapsed > timeout` and so evicts it at the next checkout instead of handing it
-/// out. No idle-eviction task is spawned either (`spawn_idle_interval` returns early
-/// on `Duration::ZERO`), so nothing closes it proactively. [`Adapter::new`] uses
-/// `ZERO` for the pre-snapshot client under SnapStart — see
-/// [`base_client_idle_timeout`]. This function itself reads no environment: the
-/// caller decides, so the post-restore rebuild cannot silently inherit the
-/// pre-snapshot restriction.
-fn build_client(idle_timeout: Duration) -> Client<HttpConnector, Body> {
+/// When `pooling` is [`Pooling::Disabled`] the client sets
+/// `pool_max_idle_per_host(0)`, which turns hyper's pool off outright
+/// (`Config::is_enabled()` is `max_idle_per_host > 0`): a finished connection is
+/// dropped rather than parked, so reuse is impossible *by construction*.
+///
+/// That distinction is load-bearing, and a zero `idle_timeout` is NOT a substitute.
+/// With the pool enabled, reuse is decided at checkout by
+/// `now.saturating_duration_since(idle_at) > timeout`; that saturates to `ZERO` when
+/// the recorded instant is ahead of `now`, and `ZERO > ZERO` is false, so the entry
+/// is treated as fresh and handed out. A monotonic clock that has not advanced
+/// across a restore is exactly the condition hyper#3810 / rust-lang/rust#79462
+/// describe — so an expiry-based scheme would depend on the very clock the
+/// workaround exists to distrust.
+///
+/// This function reads no environment: the caller decides, so the post-restore
+/// rebuild cannot silently inherit the pre-snapshot restriction.
+fn build_client(idle_timeout: Duration, pooling: Pooling) -> Client<HttpConnector, Body> {
     let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
     builder.pool_idle_timeout(idle_timeout);
+    if pooling == Pooling::Disabled {
+        builder.pool_max_idle_per_host(0);
+    }
     builder.build(HttpConnector::new())
 }
 
-/// Idle keep-alive for the client [`Adapter::new`] builds — the one used before a
-/// SnapStart snapshot is taken.
+/// Whether a client may keep idle connections alive for reuse. See [`build_client`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pooling {
+    /// Normal keep-alive, bounded by the configured idle timeout.
+    Enabled,
+    /// No connection is retained at all — required before a SnapStart snapshot.
+    Disabled,
+}
+
+/// Connection-pool policy for the client [`Adapter::new`] builds — the one used
+/// before a SnapStart snapshot is taken.
 ///
-/// Under SnapStart this is [`Duration::ZERO`], so a connection captured in the
-/// snapshot can never be handed out — dead — after a restore (hyper#3810). Note the
-/// precise guarantee: the socket from the last pre-snapshot request *is* still in
-/// the pool, and therefore in the snapshot; what `ZERO` ensures is that it is
-/// evicted on checkout rather than reused, so no request ever travels over it. (The
-/// former `pool_max_idle_per_host(0)` disabled the pool outright and dropped the
-/// connection immediately — stronger on retention, identical on reuse.) `run()`
-/// additionally rebuilds a fresh client in the after-restore hook, but keeping this
-/// one safe by construction also protects a consumer driving the `Service` impl
-/// directly, who never triggers that hook.
+/// Disabled under SnapStart, so no connection can be captured in the snapshot and
+/// handed out — dead — after a restore (hyper#3810). `run()` additionally rebuilds a
+/// fresh client in the after-restore hook, but keeping this one safe by construction
+/// also protects a consumer driving the `Service` impl directly, who never triggers
+/// that hook — and that consumer is the only one for whom this is the sole
+/// protection, so it must not depend on the post-restore clock.
 ///
 /// The cost is that a pre-snapshot readiness poll reconnects on every 10ms attempt
-/// (measured: 27 connections per 300ms of polling, versus 1 with keep-alive). That
-/// is confined to init, which under SnapStart runs once per published version rather
-/// than per restore, and it is unchanged from the `pool_max_idle_per_host(0)`
-/// behavior this replaced.
+/// (measured: 27 connections per 300ms of polling, versus 1 with keep-alive). That is
+/// confined to init, which under SnapStart runs once per published version rather
+/// than per restore.
 ///
-/// The configured value is NOT lost: it is kept on [`Adapter::pool_idle_timeout`]
-/// and used for the after-restore rebuild, whose pool starts empty and therefore
-/// cannot hold a snapshotted connection. That is what makes
-/// `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` effective for the invocations that actually
-/// serve traffic, instead of being a no-op for the whole life of the environment.
-fn base_client_idle_timeout(configured: Duration) -> Duration {
+/// The configured idle timeout is NOT lost: it is kept on
+/// [`Adapter::pool_idle_timeout`] and applied to the after-restore rebuild, whose
+/// pool starts empty and therefore cannot hold a snapshotted connection. That is what
+/// makes `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` effective for the invocations that
+/// actually serve traffic, instead of a no-op for the life of the environment.
+fn base_client_pooling() -> Pooling {
     if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
-        Duration::ZERO
+        Pooling::Disabled
     } else {
-        configured
+        Pooling::Enabled
     }
 }
 
@@ -970,7 +983,7 @@ impl Adapter<HttpConnector, Body> {
     /// keep-alive disabled instead, so no connection can be captured in the snapshot
     /// and handed out dead after a restore; the configured value is retained and
     /// applied to the client rebuilt in the after-restore hook, which is what serves
-    /// invocations. See the private `base_client_idle_timeout` for the rationale.
+    /// invocations. See the private `base_client_pooling` for the rationale.
     ///
     /// # Arguments
     ///
@@ -995,7 +1008,7 @@ impl Adapter<HttpConnector, Body> {
     /// let adapter = Adapter::new(&options).expect("Failed to create adapter");
     /// ```
     pub fn new(options: &AdapterOptions) -> Result<Adapter<HttpConnector, Body>, Error> {
-        let client = build_client(base_client_idle_timeout(options.pool_idle_timeout));
+        let client = build_client(options.pool_idle_timeout, base_client_pooling());
 
         let schema = "http";
 
@@ -1706,7 +1719,7 @@ mod tests {
     async fn test_pool_idle_timeout_applies_under_snapstart() {
         std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
         // This is the call `SnapStartHooks::after_restore` makes.
-        let restored = build_client(Duration::from_secs(4));
+        let restored = build_client(Duration::from_secs(4), Pooling::Enabled);
         let used = connections_used(&restored, 3).await;
         std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
         assert_eq!(
@@ -1721,9 +1734,8 @@ mod tests {
     /// (hyper#3810). This also covers a consumer driving the `Service` impl directly,
     /// who never triggers the after-restore rebuild.
     ///
-    /// A zero idle timeout is the mechanism: a pooled connection is evicted on
-    /// checkout rather than reused, so it is never served over. See
-    /// [`build_client`] for exactly what that does and does not guarantee.
+    /// This counts reuse; `test_pre_snapshot_client_pool_is_disabled_not_merely_expiring`
+    /// pins the stronger, clock-independent property that the pool is off entirely.
     #[tokio::test]
     async fn test_adapter_new_client_never_pools_under_snapstart() {
         std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
@@ -1741,6 +1753,94 @@ mod tests {
         );
         // The configured value is still carried through for the post-restore rebuild.
         assert_eq!(adapter.pool_idle_timeout, Duration::from_secs(4));
+    }
+
+    /// Issues one request over `client`, then reports whether the connection is still
+    /// open afterwards (i.e. parked in hyper's idle pool).
+    ///
+    /// This distinguishes a *disabled* pool from a pool whose entries merely expire:
+    /// with `pool_max_idle_per_host(0)` the connection is dropped as soon as the
+    /// response completes, so the server side finishes; with
+    /// `pool_idle_timeout(Duration::ZERO)` the socket stays parked and is only
+    /// evicted at the next checkout. It observes the connection's lifetime rather
+    /// than elapsed time, so unlike a reuse count it cannot be satisfied by a clock
+    /// that happens to have advanced.
+    async fn connection_retained_after_request(client: &Client<HttpConnector, Body>) -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let closed = Arc::new(AtomicBool::new(false));
+        let flag = closed.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let svc = hyper::service::service_fn(|_req: hyper::Request<hyper::body::Incoming>| async {
+                Ok::<_, std::convert::Infallible>(hyper::Response::new(String::from("ok")))
+            });
+            // Returns once the peer closes the connection.
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                .await;
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        let req = hyper::Request::builder()
+            .uri(format!("http://{addr}/"))
+            .body(Body::Empty)
+            .unwrap();
+        let resp = client.request(req).await.unwrap();
+        let _ = resp.into_body().collect().await.unwrap();
+        // Give the client a moment to either drop or park the connection.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        !closed.load(Ordering::SeqCst)
+    }
+
+    /// The pre-snapshot client must make reuse impossible *by construction*, not by
+    /// relying on the monotonic clock.
+    ///
+    /// Regression for the bot `[BUG]` finding: `pool_idle_timeout(Duration::ZERO)`
+    /// leaves hyper's pool enabled and parks the connection, deciding reuse at
+    /// checkout via `now.saturating_duration_since(idle_at) > timeout`. That
+    /// saturates to `ZERO` when the recorded instant is ahead of `now`, and
+    /// `ZERO > ZERO` is false — so the entry counts as fresh and is handed out. A
+    /// monotonic clock that did not advance across a restore is exactly the
+    /// condition hyper#3810 / rust-lang/rust#79462 describe, and exactly what the
+    /// original `pool_max_idle_per_host(0)` was written to distrust. Under `run()`
+    /// it is masked by the after-restore rebuild, but the direct-`Service` consumer
+    /// this restriction exists for is the one path where it can fail.
+    ///
+    /// `pool_max_idle_per_host(0)` disables the pool, so no clock is consulted.
+    #[tokio::test]
+    async fn test_pre_snapshot_client_pool_is_disabled_not_merely_expiring() {
+        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
+        let options = AdapterOptions {
+            pool_idle_timeout: Duration::from_secs(4),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).unwrap();
+        let retained = connection_retained_after_request(&adapter.client).await;
+        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        assert!(
+            !retained,
+            "the pre-snapshot client must DROP its connection, not park it in the idle \
+             pool where a non-advancing clock could see it as fresh and reuse it"
+        );
+    }
+
+    /// The post-restore client, by contrast, must keep pooling: its pool starts empty
+    /// so it cannot hold a snapshotted connection, and retaining one is the whole
+    /// point of `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`.
+    #[tokio::test]
+    async fn test_post_restore_client_retains_its_connection() {
+        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
+        // The call `SnapStartHooks::after_restore` makes.
+        let restored = build_client(Duration::from_secs(4), Pooling::Enabled);
+        let retained = connection_retained_after_request(&restored).await;
+        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        assert!(
+            retained,
+            "the post-restore client must keep its connection alive for reuse"
+        );
     }
 
     /// Without SnapStart nothing changes: keep-alive to the inner app is honored, so
@@ -2390,7 +2490,7 @@ mod tests {
         let base_ptr = Arc::as_ptr(adapter.client()) as *const ();
 
         // Publish a fresh client.
-        let fresh = Arc::new(build_client(Duration::from_secs(4)));
+        let fresh = Arc::new(build_client(Duration::from_secs(4), Pooling::Enabled));
         let fresh_ptr = Arc::as_ptr(&fresh) as *const ();
         assert!(adapter.restored_client.set(fresh).is_ok(), "set should succeed once");
 

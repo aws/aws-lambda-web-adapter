@@ -10,7 +10,7 @@ use lambda_http::{Body, BoxFuture, Error, SnapStartResource};
 use tokio::time::timeout;
 use url::Url;
 
-use crate::{build_client, readiness, Protocol};
+use crate::{build_client, readiness, Pooling, Protocol};
 
 /// Maximum time the adapter waits for an inner-app hook to respond before
 /// failing the SnapStart phase. Bounds a hung or unresponsive hook so the
@@ -121,7 +121,7 @@ impl SnapStartResource for SnapStartHooks {
             // 1. Publish a fresh client FIRST so the hook POST below (and all
             //    subsequent invocations) use post-restore connections rather
             //    than stale pre-snapshot ones. Ignore "already set".
-            let fresh = Arc::new(build_client(self.pool_idle_timeout));
+            let fresh = Arc::new(build_client(self.pool_idle_timeout, Pooling::Enabled));
             let _ = self.restored_client.set(fresh.clone());
 
             // 2. Notify the app over the fresh client. Failure fails the restore;
@@ -205,7 +205,7 @@ mod tests {
             .unwrap();
         SnapStartHooks::new(
             Arc::new(OnceLock::new()),
-            Arc::new(build_client(Duration::from_secs(4))),
+            Arc::new(build_client(Duration::from_secs(4), Pooling::Enabled)),
             domain,
             before.map(str::to_string),
             after.map(str::to_string),
@@ -296,7 +296,7 @@ mod tests {
             then.status(200).delay(Duration::from_secs(2));
         });
         let domain: Url = format!("http://{}:{}", server.host(), server.port()).parse().unwrap();
-        let client = build_client(Duration::from_secs(4));
+        let client = build_client(Duration::from_secs(4), Pooling::Enabled);
 
         let result =
             SnapStartHooks::post_hook_with_timeout(&client, &domain, "/slow", Duration::from_millis(100)).await;
@@ -336,7 +336,7 @@ mod tests {
             then.status(503);
         });
         let h = hooks_with_health(&server, None, None, "/never");
-        let client = build_client(Duration::from_secs(4));
+        let client = build_client(Duration::from_secs(4), Pooling::Enabled);
 
         let result = h
             .check_readiness_with_timeout(&client, Duration::from_millis(100))
