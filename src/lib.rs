@@ -1100,20 +1100,30 @@ impl Adapter<HttpConnector, Body> {
         // non-HTTP trigger event would canonicalize onto the hook route and get a 403
         // instead of reaching the app. Fail here rather than silently swallowing that
         // whole class of events with only a per-invocation warning.
-        let pass_through_target = hook_target(&domain, &Some(options.pass_through_path.clone()))?;
-        for (configured, target) in [
-            (&snapstart_before_checkpoint_path, &hook_target_before_checkpoint),
-            (&snapstart_after_restore_path, &hook_target_after_restore),
-        ] {
-            if target.is_some() && *target == pass_through_target {
-                return Err(Error::from(format!(
-                    "SnapStart hook path {:?} resolves to the same route as the pass-through path \
-                     {:?} (AWS_LWA_PASS_THROUGH_PATH). Non-HTTP trigger events are rewritten onto \
-                     that path before the hook guard runs, so every such event would be rejected \
-                     with 403 instead of reaching your application. Choose a different hook path.",
-                    configured.as_deref().unwrap_or_default(),
-                    options.pass_through_path
-                )));
+        //
+        // Only relevant when a hook exists. And note the `.unwrap_or(None)`:
+        // `pass_through_path` is unrelated configuration read straight from the
+        // environment, so a value `hook_target` would reject (root-collapsing,
+        // `%`-bearing, non-canonicalizable) must NOT fail initialization here — it is
+        // also incapable of colliding, since hook targets are canonicalizable and
+        // non-empty by construction and so nothing rewritten onto such a path can
+        // canonicalize onto one.
+        if hook_target_before_checkpoint.is_some() || hook_target_after_restore.is_some() {
+            let pass_through_target = hook_target(&domain, &Some(options.pass_through_path.clone())).unwrap_or(None);
+            for (configured, target) in [
+                (&snapstart_before_checkpoint_path, &hook_target_before_checkpoint),
+                (&snapstart_after_restore_path, &hook_target_after_restore),
+            ] {
+                if target.is_some() && *target == pass_through_target {
+                    return Err(Error::from(format!(
+                        "SnapStart hook path {:?} resolves to the same route as the pass-through path \
+                         {:?} (AWS_LWA_PASS_THROUGH_PATH). Non-HTTP trigger events are rewritten onto \
+                         that path before the hook guard runs, so every such event would be rejected \
+                         with 403 instead of reaching your application. Choose a different hook path.",
+                        configured.as_deref().unwrap_or_default(),
+                        options.pass_through_path
+                    )));
+                }
             }
         }
 
@@ -3102,5 +3112,44 @@ mod tests {
             Adapter::new(&options).is_err(),
             "the collision follows the configured value"
         );
+    }
+
+    /// The pass-through collision check must not fail init on an unguardable
+    /// `AWS_LWA_PASS_THROUGH_PATH`, which is unrelated configuration.
+    ///
+    /// Regression for the bot `[BUG]` finding on de0ea31: the check ran
+    /// `hook_target(&domain, &Some(pass_through_path))?`, so a pass-through path that
+    /// `hook_target` rejects — `/` collapses to the root, and `AWS_LWA_PASS_THROUGH_PATH`
+    /// is read straight from the environment with no prior validation — aborted
+    /// `Adapter::new` with a SnapStart-flavored error, even with no hook configured and
+    /// therefore no guard and nothing to collide with.
+    ///
+    /// Such a path cannot collide: hook targets are canonicalizable and non-empty by
+    /// construction, so a request rewritten onto a root-collapsing, `%`-bearing, or
+    /// non-canonicalizable pass-through path can never canonicalize onto one.
+    #[test]
+    fn test_unguardable_pass_through_path_does_not_fail_init() {
+        for pass_through in ["/", "//", "/..", "/reports/100%25", "/bad/%2"] {
+            // No hook configured: nothing to validate against at all.
+            let options = AdapterOptions {
+                pass_through_path: pass_through.to_string(),
+                ..Default::default()
+            };
+            assert!(
+                Adapter::new(&options).is_ok(),
+                "pass-through path {pass_through:?} must not fail init when no hook is configured"
+            );
+
+            // Hook configured: still no collision possible with such a path.
+            let options = AdapterOptions {
+                pass_through_path: pass_through.to_string(),
+                snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+                ..Default::default()
+            };
+            assert!(
+                Adapter::new(&options).is_ok(),
+                "pass-through path {pass_through:?} cannot collide with a canonical hook route"
+            );
+        }
     }
 }
