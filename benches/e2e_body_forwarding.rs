@@ -77,12 +77,13 @@ fn bench_text_body(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
-            let adapter = Adapter::new(&AdapterOptions {
-                host: app_server.host(),
-                port: app_server.port().to_string(),
-                readiness_check_port: app_server.port().to_string(),
-                readiness_check_path: "/".to_string(),
-                ..Default::default()
+            let adapter = Adapter::new(&{
+                let mut o = AdapterOptions::default();
+                o.host = app_server.host();
+                o.port = app_server.port().to_string();
+                o.readiness_check_port = app_server.port().to_string();
+                o.readiness_check_path = "/".to_string();
+                o
             })
             .expect("Failed to create adapter");
 
@@ -158,12 +159,13 @@ fn bench_binary_body(c: &mut Criterion) {
             BenchmarkId::from_parameter(body_base64.len()),
             &target_size,
             |b, &_size| {
-                let adapter = Adapter::new(&AdapterOptions {
-                    host: app_server.host(),
-                    port: app_server.port().to_string(),
-                    readiness_check_port: app_server.port().to_string(),
-                    readiness_check_path: "/".to_string(),
-                    ..Default::default()
+                let adapter = Adapter::new(&{
+                    let mut o = AdapterOptions::default();
+                    o.host = app_server.host();
+                    o.port = app_server.port().to_string();
+                    o.readiness_check_port = app_server.port().to_string();
+                    o.readiness_check_path = "/".to_string();
+                    o
                 })
                 .expect("Failed to create adapter");
 

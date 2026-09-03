@@ -60,7 +60,7 @@ The readiness check port/path and traffic port can be configured using environme
 | AWS_LWA_READINESS_CHECK_PROTOCOL        | readiness check protocol: "http" or "tcp"                                       | "http"       |
 | AWS_LWA_READINESS_CHECK_HEALTHY_STATUS  | HTTP status codes considered healthy (e.g., "200-399")                          | "100-499"    |
 | AWS_LWA_ASYNC_INIT                      | enable asynchronous initialization for long initialization functions             | "false"      |
-| AWS_LWA_REMOVE_BASE_PATH               | the base path to be removed from request path                                   | None         |
+| AWS_LWA_REMOVE_BASE_PATH               | base path to remove from the request path; strips exactly one leading occurrence on a segment boundary (with `/api`: `/api/api/order`->`/api/order`, `/apiorder` unchanged; trailing slash normalized) | None         |
 | AWS_LWA_ENABLE_COMPRESSION             | enable gzip/br compression for response body (buffered mode only)               | "false"      |
 | AWS_LWA_INVOKE_MODE                    | Lambda function invoke mode: "buffered" or "response_stream"                    | "buffered"   |
 | AWS_LWA_PASS_THROUGH_PATH             | the path for receiving event payloads from non-http triggers                    | "/events"    |
@@ -70,7 +70,7 @@ The readiness check port/path and traffic port can be configured using environme
 | AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH | inner-app path the adapter POSTs to before a SnapStart snapshot (drain resources) | None         |
 | AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH     | inner-app path the adapter POSTs to after a SnapStart restore (reconnect/reseed)  | None         |
 | AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS        | idle keep-alive (seconds) for the adapter's connection to your app                | "4"          |
-| AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS  | seconds (fractional allowed, e.g. 0.5) to wait for the app to report ready (cold-start init and after a SnapStart restore); on expiry the adapter FAILS (init fails and the runtime never starts; a restore fails) rather than serving. Unset = wait indefinitely. async_init keeps its own ~9.8s bound | None (unbounded) |
+| AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS  | seconds (fractional allowed, e.g. 0.5) to wait for the app to report ready (cold-start init and after a SnapStart restore); on expiry the adapter FAILS (init fails and the runtime never starts; a restore fails) rather than serving. Unset, 0, or negative all mean wait indefinitely (a set-but-<=0 or malformed value is ignored with a warning). async_init keeps its own ~9.8s bound | unset / <=0 (unbounded) |
 
 > **Deprecation Notice:** The following non-namespaced environment variables are deprecated and will be removed in version 2.0:
 > `HOST`, `READINESS_CHECK_PORT`, `READINESS_CHECK_PATH`, `READINESS_CHECK_PROTOCOL`, `REMOVE_BASE_PATH`, `ASYNC_INIT`.

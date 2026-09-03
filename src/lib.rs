@@ -272,16 +272,16 @@ impl From<&str> for LambdaInvokeMode {
 /// // Use defaults from environment variables
 /// let options = AdapterOptions::default();
 ///
-/// // Or configure manually
-/// let options = AdapterOptions {
-///     host: "127.0.0.1".to_string(),
-///     port: "3000".to_string(),
-///     readiness_check_path: "/health".to_string(),
-///     readiness_check_protocol: Protocol::Http,
-///     invoke_mode: LambdaInvokeMode::ResponseStream,
-///     ..Default::default()
-/// };
+/// // Or configure manually. `AdapterOptions` is `#[non_exhaustive]`, so start
+/// // from `Default` and set the fields you need rather than a struct literal.
+/// let mut options = AdapterOptions::default();
+/// options.host = "127.0.0.1".to_string();
+/// options.port = "3000".to_string();
+/// options.readiness_check_path = "/health".to_string();
+/// options.readiness_check_protocol = Protocol::Http;
+/// options.invoke_mode = LambdaInvokeMode::ResponseStream;
 /// ```
+#[non_exhaustive]
 pub struct AdapterOptions {
     /// Host address where the web application is listening.
     /// Default: `127.0.0.1`
@@ -810,31 +810,38 @@ fn pool_idle_timeout_from_env() -> Duration {
 /// Reads the readiness-check timeout from
 /// [`ENV_READINESS_CHECK_TIMEOUT_SECONDS`] (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
 /// Accepts fractional seconds (e.g. `0.5`). Returns `None` — an unbounded readiness
-/// wait (historical behavior) — in three cases, only one of which is silent:
+/// wait (historical behavior) — in these cases:
 /// * **unset**: silent (the default).
-/// * **`<= 0` (including `0`)**: silent and intentional — a zero bound would expire
-///   instantly and fail every check, so it is treated as "no bound".
+/// * **`<= 0` (including `0`)**: a zero/negative value reads as "fail fast" but a
+///   zero timeout would expire instantly and fail every check, so it is treated as
+///   "no bound" — and this emits a `warn!` so the non-obvious mapping is visible.
 /// * **set but unusable** (a stray suffix like `10s`, non-numeric, NaN, infinity,
-///   negative, or an overflowing magnitude): emits a `warn!` before falling back,
-///   because silently ignoring a misconfigured bound would let a sync-init cold
-///   start hang to the Lambda function timeout with no diagnostic.
+///   or an overflowing magnitude): emits a `warn!` before falling back, because
+///   silently ignoring a misconfigured bound would let a sync-init cold start hang
+///   to the Lambda function timeout with no diagnostic.
 fn readiness_check_timeout_from_env() -> Option<Duration> {
     // Unset -> silent unbounded (historical default).
     let raw = env::var(ENV_READINESS_CHECK_TIMEOUT_SECONDS).ok()?;
     let trimmed = raw.trim();
 
     // Parse as fractional seconds; a value that does not parse as a finite,
-    // representable, positive Duration is REJECTED. Distinguish two rejection kinds:
-    //   * `<= 0` (including `0`) is an intentional, documented choice: treat as
-    //     unbounded silently (a zero bound would expire instantly and fail every
-    //     check), so no warning.
-    //   * anything else set-but-unusable (a stray suffix like `10s`, `abc`, NaN,
-    //     infinity, negative, or an overflowing magnitude) is almost certainly a
-    //     misconfiguration. Silently falling back to unbounded would make a
-    //     sync-init cold start hang to the Lambda function timeout with no signal,
-    //     so WARN and then fall back.
+    // representable, positive Duration is REJECTED and falls back to unbounded.
+    // In every set-but-rejected case we WARN, because a set value silently
+    // becoming "wait forever" is the opposite of the operator's intent and would
+    // let a sync-init cold start hang to the Lambda function timeout with no
+    // signal. This includes `<= 0` (including `0`): a zero/negative bound reads
+    // naturally as "fail fast / don't wait", but a zero timeout would expire
+    // instantly and fail every check, so it is treated as "no bound" — and the
+    // warning makes that non-obvious mapping visible.
     match trimmed.parse::<f64>() {
-        Ok(secs) if secs <= 0.0 => None, // intentional unbounded, no warning
+        Ok(secs) if secs <= 0.0 => {
+            tracing::warn!(
+                value = %trimmed,
+                "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS is <= 0; a zero/negative bound is \
+                 treated as no timeout (waiting for readiness indefinitely), not fail-fast"
+            );
+            None
+        }
         Ok(secs) => match Duration::try_from_secs_f64(secs) {
             Ok(d) if !d.is_zero() => Some(d),
             // secs > 0 but not representable as a Duration (NaN is caught by the

@@ -12,7 +12,7 @@ All configuration is done through environment variables, set either in your Dock
 | `AWS_LWA_READINESS_CHECK_PROTOCOL` | Readiness check protocol: `http` or `tcp` | `http` |
 | `AWS_LWA_READINESS_CHECK_HEALTHY_STATUS` | HTTP status codes considered healthy (e.g. `200-399` or `200,201,204,301-399`) | `100-499` |
 | `AWS_LWA_ASYNC_INIT` | Enable asynchronous initialization | `false` |
-| `AWS_LWA_REMOVE_BASE_PATH` | Base path to remove from request path | None |
+| `AWS_LWA_REMOVE_BASE_PATH` | Base path to remove from the request path. Strips **exactly one** leading occurrence and only on a path-segment boundary: with `/api`, `/api/api/order` → `/api/order` and `/apiorder` is passed through unchanged; a configured trailing slash (`/api/`) is normalized. | None |
 | `AWS_LWA_ENABLE_COMPRESSION` | Enable gzip/br compression (buffered mode only) | `false` |
 | `AWS_LWA_INVOKE_MODE` | Invoke mode: `buffered` or `response_stream` | `buffered` |
 | `AWS_LWA_PASS_THROUGH_PATH` | Path for non-HTTP event payloads | `/events` |
@@ -22,7 +22,7 @@ All configuration is done through environment variables, set either in your Dock
 | `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` | Inner-app path the adapter POSTs to before a SnapStart snapshot | None |
 | `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` | Inner-app path the adapter POSTs to after a SnapStart restore | None |
 | `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` | Idle keep-alive (seconds) for the adapter's connection to your app | `4` |
-| `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` | Seconds (fractional allowed, e.g. `0.5`) the adapter waits for the app to report ready (cold-start init **and** after a SnapStart restore). On expiry the adapter **fails** rather than serving: cold-start init fails (the runtime never starts) and a restore fails. Unset = wait indefinitely. The `async_init` path keeps its own ~9.8s bound (non-fatal) and is unaffected. | unset (unbounded) |
+| `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` | Seconds (fractional allowed, e.g. `0.5`) the adapter waits for the app to report ready (cold-start init **and** after a SnapStart restore). On expiry the adapter **fails** rather than serving: cold-start init fails (the runtime never starts) and a restore fails. Unset, `0`, or a negative value all mean **wait indefinitely** (no bound); a set-but-`<= 0` or malformed value is ignored with a `warn!`. The `async_init` path keeps its own ~9.8s bound (non-fatal) and is unaffected. | unset / `<= 0` (unbounded) |
 
 ## Deprecated Variables
 

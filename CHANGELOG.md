@@ -15,6 +15,11 @@
     `Adapter` as a library `Service` rather than via `Adapter::run()`; the crate
     re-exports `Bytes` and `BoxBody` so that type can be named without a direct
     dependency on `bytes` / `http-body-util`.
+  - Note: `AdapterOptions` is now `#[non_exhaustive]`, so new fields can be added
+    without a breaking change. Library consumers can no longer construct it with a
+    struct literal; start from `AdapterOptions::default()` and set the fields you
+    need. (The standalone `lambda-adapter` binary is unaffected — it builds options
+    from environment variables.)
 - Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive (in
   whole seconds) of the adapter's HTTP connection to your app. Default: 4 seconds.
 - Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check
