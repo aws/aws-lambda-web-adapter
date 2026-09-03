@@ -9,17 +9,15 @@
   60-second timeout. After restore the adapter refreshes its own HTTP client and
   re-runs the readiness check before admitting traffic, and it rejects external
   traffic to the hook paths with 403.
-  - Note: to let the guard return a synthetic 403 alongside proxied responses, the
-    `tower::Service` impl's `Response` is now `Response<BoxBody<Bytes, Error>>`
-    (previously `Response<Incoming>`). This only affects code that drives the
-    `Adapter` as a library `Service` rather than via `Adapter::run()`; the crate
-    re-exports `Bytes` and `BoxBody` so that type can be named without a direct
-    dependency on `bytes` / `http-body-util`.
-  - Note: `AdapterOptions` is now `#[non_exhaustive]`, so new fields can be added
-    without a breaking change. Library consumers can no longer construct it with a
-    struct literal; start from `AdapterOptions::default()` and set the fields you
-    need. (The standalone `lambda-adapter` binary is unaffected — it builds options
-    from environment variables.)
+  - The crate is now `publish = false`: Lambda Web Adapter ships as the
+    `lambda-adapter` binary (a Lambda layer / copied extension), not as a published
+    library, so the `lib` target has no external API-stability contract. The
+    internal changes SnapStart required — the `tower::Service` impl's `Response` is
+    now `Response<BoxBody<Bytes, Error>>` (was `Response<Incoming>`),
+    `check_init_health` now returns `Result`, and `AdapterOptions` is
+    `#[non_exhaustive]` (construct it from `AdapterOptions::default()`) — therefore
+    do not affect any published API. `Bytes` and `BoxBody` are re-exported for
+    convenience of in-repo `Service` users.
 - Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive (in
   whole seconds) of the adapter's HTTP connection to your app. Default: 4 seconds.
 - Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check

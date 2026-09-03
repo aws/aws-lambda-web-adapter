@@ -11,10 +11,14 @@ keywords = ["AWS", "Lambda", "APIGateway", "ALB", "API"]
 license = "Apache-2.0"
 homepage = "https://github.com/aws/aws-lambda-web-adapter"
 repository = "https://github.com/aws/aws-lambda-web-adapter"
-documentation = "https://docs.rs/lambda_web_adapter"
 categories = ["web-programming::http-server"]
 readme = "README.md"
 exclude = ["examples"]
+# Lambda Web Adapter ships as the `lambda-adapter` binary (packaged as a Lambda
+# layer / container-copied extension), not as a published library. The crate is
+# not published to crates.io, so the `lib` target is an internal implementation
+# detail of the binary and tests — it has no external API-stability contract.
+publish = false
 
 [dependencies]
 bytes = "1.9.0"
