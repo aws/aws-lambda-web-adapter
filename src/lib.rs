@@ -783,9 +783,22 @@ pub struct Adapter<C, B> {
 /// the idle-connection keep-alive, resolved from
 /// [`AdapterOptions::pool_idle_timeout`] (env `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`,
 /// default 4 seconds).
+///
+/// Under SnapStart (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) the client also
+/// sets `pool_max_idle_per_host(0)`, so it never retains an idle connection that
+/// could be captured in the snapshot and handed out — dead — after a restore.
+/// This is defense-in-depth: `run()` additionally rebuilds a fresh client in the
+/// after-restore hook, but keeping the base client safe-by-construction protects
+/// a consumer driving the `Service` directly (who never triggers that hook) at
+/// negligible cost, since the connection is a cheap localhost reconnect. The
+/// configured `idle_timeout` still applies (it is moot when max-idle is 0, but
+/// harmless, and correct if the SnapStart cap is ever lifted).
 fn build_client(idle_timeout: Duration) -> Client<HttpConnector, Body> {
     let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
     builder.pool_idle_timeout(idle_timeout);
+    if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
+        builder.pool_max_idle_per_host(0);
+    }
     builder.build(HttpConnector::new())
 }
 

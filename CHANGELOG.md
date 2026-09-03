@@ -41,6 +41,12 @@
   `lambda_runtime::run_concurrent` — does not add `TracingLayer`; the adapter now
   applies it explicitly, so per-request log fields (including the hook-path 403
   warning) are no longer dropped.
+- Restore `pool_max_idle_per_host(0)` on the inner-app HTTP client under SnapStart
+  (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) so the base client never retains an
+  idle connection that would be captured in the snapshot and handed out dead after
+  a restore. `run()` also rebuilds a fresh client in the after-restore hook; this
+  keeps the base client safe-by-construction for a consumer driving the `Service`
+  directly (who never triggers that hook), at negligible cost (localhost reconnect).
 - Normalize the configured SnapStart hook path through the same `Url::set_path`
   transformation used to call the hook, so the guard protects exactly the route the
   application serves. Previously the guard canonicalized the raw configured string
