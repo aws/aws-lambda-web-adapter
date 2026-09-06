@@ -1248,6 +1248,23 @@ impl Adapter<HttpConnector, Body> {
     ///
     /// Registers with the Lambda Extensions API and waits for the next event.
     /// This keeps the extension alive for the duration of the Lambda instance.
+    ///
+    /// The registration subscribes to **no events** (`{"events": []}`), deliberately.
+    /// Being registered at all is the entire point: Lambda only sends `SIGTERM` at
+    /// environment shutdown when an extension is registered, which is what the
+    /// graceful-shutdown feature relies on. Because nothing is subscribed, RAPID has
+    /// no event to deliver, so the `GET /event/next` call below never resolves — the
+    /// spawned task parks on it for the life of the process by design, and that is
+    /// what "keeps the extension alive".
+    ///
+    /// Under SnapStart that parked request is captured mid-flight in the snapshot and
+    /// is never re-established after a restore. That is harmless for the same reason:
+    /// it was never going to resolve, and RAPID's *registration* state is part of the
+    /// snapshotted microVM, so the effect survives even though the connection does
+    /// not. Verified on a deployed SnapStart container function — the restored
+    /// environment received `SIGTERM` 457s after restore, and the failure path below
+    /// (which would `exit(1)`) never fired across ~8 minutes and five restores.
+    /// Re-registering after restore would be robustness, not a fix.
     async fn register_extension_internal() -> Result<(), Error> {
         // Prefer the original (pre-proxy) value if apply_runtime_proxy_config() captured one.
         // Otherwise fall back to the current env var.
