@@ -136,6 +136,11 @@ impl SnapStartResource for SnapStartHooks {
     fn before_snapshot(&self) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async move {
             if let Some(path) = self.before_checkpoint_path.as_deref() {
+                // Gate on readiness first. With AWS_LWA_ASYNC_INIT the adapter can
+                // reach here before the app has bound its port, and the POST would
+                // fail instantly with ECONNREFUSED (HOOK_TIMEOUT does not apply to a
+                // refusal), failing initialization with what looks like an app bug.
+                self.ensure_ready(&self.client, "before-checkpoint").await?;
                 Self::post_hook(&self.client, &self.domain, path).await?;
             }
             Ok(())
@@ -174,10 +179,7 @@ impl SnapStartResource for SnapStartHooks {
             // 3. Confirm the app is serving again before traffic is admitted.
             //    A configured timeout bounds the wait and fails the restore on
             //    expiry; when unset the wait is unbounded (historical behavior).
-            match self.readiness_timeout {
-                Some(t) => self.check_readiness_with_timeout(&fresh, t).await?,
-                None => self.check_readiness_unbounded(&fresh).await,
-            }
+            self.ensure_ready(&fresh, "after-restore").await?;
 
             Ok(())
         })
@@ -185,34 +187,46 @@ impl SnapStartResource for SnapStartHooks {
 }
 
 impl SnapStartHooks {
-    /// Step 3 of [`after_restore`](SnapStartResource::after_restore): retry-until-ready
-    /// over `client`, bounded by `readiness_timeout`. A timeout or an unready app is an
-    /// error, which fails the restore (reported to `/restore/error`). Split out with an
-    /// explicit timeout so tests can exercise the failure path without waiting a long
-    /// configured timeout (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
-    async fn check_readiness_with_timeout(
+    /// Waits for the app to report ready, bounded by `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`
+    /// when it is set. `phase` names the SnapStart phase in the timeout error so the
+    /// operator can tell an initialization failure from a restore failure.
+    ///
+    /// Both hooks go through this. `before_snapshot` needs it because
+    /// `AWS_LWA_ASYNC_INIT=true` lets initialization proceed before the app is
+    /// listening: without the gate the hook POST would hit `ECONNREFUSED` and fail
+    /// the init phase, which is precisely the slow-booting app that setting exists
+    /// for. `after_restore` needs it to avoid admitting traffic to an app that has
+    /// not finished recovering.
+    ///
+    /// With the timeout unset the wait is unbounded and cannot fail, only block:
+    /// [`readiness::wait_until_ready`] retries forever, so an app that never comes up
+    /// holds the phase open until Lambda's own timeout, with the escalating
+    /// `app is not ready after {}ms` log as the only adapter-side signal. Setting
+    /// `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` converts that into a reported
+    /// `/init/error` or `/restore/error`.
+    async fn ensure_ready(&self, client: &Client<HttpConnector, Body>, phase: &str) -> Result<(), Error> {
+        match self.readiness_timeout {
+            Some(t) => self.ensure_ready_with_timeout(client, t, phase).await,
+            None => {
+                self.wait_ready(client).await;
+                Ok(())
+            }
+        }
+    }
+
+    /// [`ensure_ready`](Self::ensure_ready) with an explicit bound, so tests can
+    /// exercise the timeout path without waiting a long configured timeout.
+    async fn ensure_ready_with_timeout(
         &self,
         client: &Client<HttpConnector, Body>,
         readiness_timeout: Duration,
+        phase: &str,
     ) -> Result<(), Error> {
         timeout(readiness_timeout, self.wait_ready(client)).await.map_err(|_| {
             Error::from(format!(
-                "SnapStart after-restore readiness check timed out after {readiness_timeout:?}"
+                "SnapStart {phase} readiness check timed out after {readiness_timeout:?}"
             ))
         })
-    }
-
-    /// Unbounded variant of [`check_readiness_with_timeout`](Self::check_readiness_with_timeout):
-    /// waits indefinitely for the app to become ready. Used when
-    /// `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` is unset (historical behavior).
-    ///
-    /// This cannot fail, only block: [`readiness::wait_until_ready`] retries forever.
-    /// An app that never recovers therefore holds the restore open until Lambda's own
-    /// restore timeout fires, with the escalating `app is not ready after {}ms` log as
-    /// the only adapter-side signal. Set `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to
-    /// convert that into a reported `/restore/error` instead.
-    async fn check_readiness_unbounded(&self, client: &Client<HttpConnector, Body>) {
-        self.wait_ready(client).await;
     }
 
     /// Shared readiness wait against the configured healthcheck endpoint.
@@ -270,6 +284,61 @@ mod tests {
 
     #[tokio::test]
     async fn before_snapshot_posts_when_set() {
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/before");
+            then.status(200);
+        });
+        let h = hooks(&server, Some("/before"), None);
+        assert!(h.before_snapshot().await.is_ok());
+        m.assert();
+    }
+
+    /// `before_snapshot` must gate the hook POST on readiness, like every other path
+    /// into the application.
+    ///
+    /// Regression for the final-review finding: with `AWS_LWA_ASYNC_INIT=true`,
+    /// `check_init_health` gives up at 9.8s and returns `Ok(())` with
+    /// `ready_at_init == false` so the app can keep booting. `run()` then drives
+    /// `snapstart_lifecycle` straight into `before_snapshot`, which POSTed
+    /// immediately. For an app that has not bound its port yet that POST gets
+    /// `ECONNREFUSED` at once — the 60s `HOOK_TIMEOUT` never applies to a refusal —
+    /// and the error goes to `/init/error`, so publishing the SnapStart version fails
+    /// with what looks like an application bug. That combination is exactly the
+    /// slow-booting app `async_init` exists for.
+    ///
+    /// Here the hook route is mocked and would answer 200, but readiness never
+    /// passes; the hook must NOT be called, and the error must name the readiness
+    /// check rather than the POST.
+    #[tokio::test]
+    async fn before_snapshot_waits_for_readiness_before_posting() {
+        let server = MockServer::start();
+        let hook = server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/before");
+            then.status(200);
+        });
+        // Readiness target answers 503 forever, so the app is never ready.
+        server.mock(|when, then| {
+            when.path("/never-ready");
+            then.status(503);
+        });
+        let mut h = hooks_with_health(&server, Some("/before"), None, "/never-ready");
+        h.readiness_timeout = Some(Duration::from_millis(150));
+
+        let err = h
+            .before_snapshot()
+            .await
+            .expect_err("an app that is not ready must fail the before-checkpoint phase");
+        assert!(
+            err.to_string().contains("before-checkpoint") && err.to_string().contains("readiness"),
+            "error must name the before-checkpoint readiness check, got: {err}"
+        );
+        hook.assert_calls(0);
+    }
+
+    /// The gate must not change the happy path: a ready app still gets the POST.
+    #[tokio::test]
+    async fn before_snapshot_posts_once_app_is_ready() {
         let server = MockServer::start();
         let m = server.mock(|when, then| {
             when.method(httpmock::Method::POST).path("/before");
@@ -413,10 +482,15 @@ mod tests {
         let client = build_client(Duration::from_secs(4), Pooling::Enabled);
 
         let result = h
-            .check_readiness_with_timeout(&client, Duration::from_millis(100))
+            .ensure_ready_with_timeout(&client, Duration::from_millis(100), "after-restore")
             .await;
 
         let err = result.expect_err("unready app should fail the readiness check");
         assert!(err.to_string().contains("timed out"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("after-restore"),
+            "error must name the phase so an init failure is distinguishable from a restore \
+             failure, got: {err}"
+        );
     }
 }

@@ -376,8 +376,8 @@ pub struct AdapterOptions {
 
     /// Idle-connection keep-alive for the adapter's HTTP client to the inner app.
     ///
-    /// Configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` (whole seconds).
-    /// Default: 4 seconds.
+    /// Configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` (fractional seconds
+    /// allowed, e.g. `0.5`). Default: 4 seconds.
     pub pool_idle_timeout: Duration,
 
     /// Bound on the readiness check: how long the adapter waits for the inner app
@@ -1844,13 +1844,13 @@ mod tests {
     /// The snapshot hazard only applies to the client built BEFORE the snapshot; a
     /// client built inside `after_restore` starts with an empty pool and cannot hold
     /// a snapshotted connection, so it is safe for it to pool normally.
+    /// Touches no environment: `build_client` takes the policy explicitly, so this is
+    /// the exact call `SnapStartHooks::after_restore` makes and nothing about it
+    /// depends on process-global state.
     #[tokio::test]
     async fn test_pool_idle_timeout_applies_under_snapstart() {
-        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
-        // This is the call `SnapStartHooks::after_restore` makes.
         let restored = build_client(Duration::from_secs(4), Pooling::Enabled);
         let used = connections_used(&restored, 3).await;
-        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
         assert_eq!(
             used, 1,
             "the post-restore client must honor the configured idle keep-alive and reuse \
@@ -1885,23 +1885,16 @@ mod tests {
     ///
     /// This counts reuse; `test_pre_snapshot_client_pool_is_disabled_not_merely_expiring`
     /// pins the stronger, clock-independent property that the pool is off entirely.
+    /// Touches no environment — `Pooling::Disabled` is passed explicitly.
     #[tokio::test]
-    async fn test_adapter_new_client_never_pools_under_snapstart() {
-        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
-        let options = AdapterOptions {
-            pool_idle_timeout: Duration::from_secs(4),
-            ..Default::default()
-        };
-        let adapter = Adapter::new(&options).unwrap();
-        let used = connections_used(&adapter.client, 3).await;
-        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+    async fn test_pre_snapshot_client_never_pools() {
+        let pre_snapshot = build_client(Duration::from_secs(4), Pooling::Disabled);
+        let used = connections_used(&pre_snapshot, 3).await;
         assert_eq!(
             used, 3,
             "the pre-snapshot client must not retain an idle connection, but it reused one \
              ({used} connections for 3 requests)"
         );
-        // The configured value is still carried through for the post-restore rebuild.
-        assert_eq!(adapter.pool_idle_timeout, Duration::from_secs(4));
     }
 
     /// Issues one request over `client`, then reports whether the connection is still
@@ -1959,16 +1952,11 @@ mod tests {
     /// this restriction exists for is the one path where it can fail.
     ///
     /// `pool_max_idle_per_host(0)` disables the pool, so no clock is consulted.
+    /// Touches no environment — `Pooling::Disabled` is passed explicitly.
     #[tokio::test]
     async fn test_pre_snapshot_client_pool_is_disabled_not_merely_expiring() {
-        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
-        let options = AdapterOptions {
-            pool_idle_timeout: Duration::from_secs(4),
-            ..Default::default()
-        };
-        let adapter = Adapter::new(&options).unwrap();
-        let retained = connection_retained_after_request(&adapter.client).await;
-        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        let pre_snapshot = build_client(Duration::from_secs(4), Pooling::Disabled);
+        let retained = connection_retained_after_request(&pre_snapshot).await;
         assert!(
             !retained,
             "the pre-snapshot client must DROP its connection, not park it in the idle \
@@ -1981,26 +1969,53 @@ mod tests {
     /// point of `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`.
     #[tokio::test]
     async fn test_post_restore_client_retains_its_connection() {
-        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
         // The call `SnapStartHooks::after_restore` makes.
         let restored = build_client(Duration::from_secs(4), Pooling::Enabled);
         let retained = connection_retained_after_request(&restored).await;
-        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
         assert!(
             retained,
             "the post-restore client must keep its connection alive for reuse"
         );
     }
 
-    /// Without SnapStart nothing changes: keep-alive to the inner app is honored, so
-    /// the safety mechanism above must not cost every other deployment its pooling.
+    /// The env-var side of the pooling decision, and the only test here that touches
+    /// `AWS_LAMBDA_INITIALIZATION_TYPE`.
+    ///
+    /// All cases share one test because they mutate the same process-global variable
+    /// with opposite expectations — as separate tests under plain `cargo test` they
+    /// could interleave and invert each other's assertions, and these are the
+    /// assertions guarding the snapshot-connection hazard. The connection-level
+    /// behavior for each policy is covered env-free by
+    /// `test_pre_snapshot_client_never_pools`,
+    /// `test_pre_snapshot_client_pool_is_disabled_not_merely_expiring` and
+    /// `test_post_restore_client_retains_its_connection`, so all this needs to pin is
+    /// which policy the environment selects, plus that `Adapter::new` wires it through
+    /// and keeps the configured timeout for the after-restore rebuild.
     #[tokio::test]
-    async fn test_adapter_new_client_pools_without_snapstart() {
-        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+    async fn test_base_client_pooling_from_env() {
         let options = AdapterOptions {
             pool_idle_timeout: Duration::from_secs(4),
             ..Default::default()
         };
+
+        // Under SnapStart: pool off, and the configured value is still carried through.
+        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
+        assert_eq!(base_client_pooling(), Pooling::Disabled);
+        let adapter = Adapter::new(&options).unwrap();
+        assert_eq!(adapter.pool_idle_timeout, Duration::from_secs(4));
+        assert!(
+            !connection_retained_after_request(&adapter.client).await,
+            "Adapter::new must wire Pooling::Disabled through under SnapStart"
+        );
+
+        // Every other initialization type, and unset: normal keep-alive. The safety
+        // mechanism must not cost other deployments their pooling.
+        for other in ["on-demand", "provisioned-concurrency"] {
+            std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", other);
+            assert_eq!(base_client_pooling(), Pooling::Enabled, "init type {other:?}");
+        }
+        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        assert_eq!(base_client_pooling(), Pooling::Enabled);
         let adapter = Adapter::new(&options).unwrap();
         let used = connections_used(&adapter.client, 3).await;
         assert_eq!(used, 1, "keep-alive must be honored without SnapStart, got {used}");

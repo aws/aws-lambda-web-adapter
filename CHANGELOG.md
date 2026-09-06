@@ -18,8 +18,10 @@
     therefore do not affect any published API. `Bytes` and `BoxBody` are
     re-exported for convenience of in-repo `Service` users. Existing crates.io
     consumers keep the last published release (`1.0.0-rc1`) unchanged.
-- Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive (in
-  whole seconds) of the adapter's HTTP connection to your app. Default: 4 seconds.
+- Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive
+  (fractional seconds allowed, e.g. `0.5`) of the adapter's HTTP connection to your
+  app. Default: 4 seconds. A value that is set but unusable falls back to the
+  default and logs a warning.
 - Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check
   (fractional seconds allowed, e.g. `0.5`), applied to both the initial cold-start
   readiness wait and the
@@ -42,6 +44,21 @@
   is normalized so it behaves like `/api`. **Upgrade note:** this changes the path
   forwarded to your app for those inputs — deployments that relied on the old
   repeated/partial stripping should verify their routes.
+- Fix the before-checkpoint hook firing before the application is ready. With
+  `AWS_LWA_ASYNC_INIT=true` the adapter finishes initialization after 9.8 seconds
+  even if the app has not bound its port yet; the hook `POST` then failed
+  immediately with a connection error and failed the SnapStart initialization phase.
+  Both hooks now wait for the readiness check first, bounded by
+  `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` when it is set.
+
+### Dependencies
+
+- Bump `lambda_http` to 1.3.0 (from 1.1.1) for the SnapStart lifecycle APIs.
+  **Note:** this changes the `Cookie` header the inner application receives on
+  every deployment, SnapStart or not — a multi-entry API Gateway v2 `cookies` array
+  is now joined with `"; "` instead of `";"`, so your app sees `a=1; b=2` rather
+  than `a=1;b=2`. That is the RFC 6265 form and frameworks accept both, but code
+  that splits on a bare `;` without trimming will see leading spaces.
 
 ---
 
