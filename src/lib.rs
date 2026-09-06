@@ -580,8 +580,15 @@ fn percent_decode_once(input: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// Canonicalize a path into a list of lowercased segments for the strict,
-/// fail-closed SnapStart hook guard.
+/// Canonicalize a path into a list of lowercased segments for the strict SnapStart
+/// hook guard.
+///
+/// "Strict" means the blocked equivalence class is deliberately wide, NOT that every
+/// input is blocked on doubt. The two halves differ and the difference is
+/// load-bearing: the **configured** side fails closed (an unguardable hook path is
+/// rejected at startup by [`hook_target`]), while the **request** side fails open (an
+/// undecidable request path is forwarded, not 403'd). See the `None` discussion below
+/// for why forwarding is safe — do not "tighten" it into a 403 without reading it.
 ///
 /// The guard must block *every* spelling that the downstream app router would
 /// resolve to the configured hook route, so this over-approximates: it
@@ -2665,7 +2672,8 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Strict fail-closed SnapStart hook-path guard
+    // SnapStart hook-path guard: configured side fails closed (rejected at
+    // startup), request side fails open (undecidable paths are forwarded).
     // ---------------------------------------------------------------------
 
     /// Build an ALB request for an arbitrary method + raw path.
@@ -2874,7 +2882,7 @@ mod tests {
             assert_ne!(canonicalize_hook_path(distinct).as_ref(), Some(&hook), "{distinct:?}");
         }
         // A validly single-encoded literal percent (`%25` -> `%`) is DECIDABLE and
-        // must not fall into the fail-closed branch (regression: decode-until-stable
+        // must not fall into the undecidable branch (regression: decode-until-stable
         // used to 403 `/reports/100%25`). It canonicalizes to a concrete route.
         assert_eq!(
             canonicalize_hook_path("/reports/100%25"),
