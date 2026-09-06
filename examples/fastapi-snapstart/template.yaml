@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  FastAPI with Lambda SnapStart (container image)
+
+# More info about Globals: https://github.com/aws/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 10
+
+Resources:
+  FastAPISnapStartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      MemorySize: 256
+      AutoPublishAlias: live
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Environment:
+        Variables:
+          AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH: /snapstart/before
+          AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH: /snapstart/after
+      Events:
+        ApiEvent:
+          Type: HttpApi
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./app
+      DockerTag: python3.12-v1
+
+Outputs:
+  FastAPISnapStartApi:
+    Description: "API Gateway endpoint URL for Prod stage for FastAPI SnapStart function"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/"
+  FastAPISnapStartFunction:
+    Description: "FastAPI SnapStart Lambda Function ARN"
+    Value: !GetAtt FastAPISnapStartFunction.Arn
+  FastAPISnapStartIamRole:
+    Description: "Implicit IAM Role created for FastAPI SnapStart function"
+    Value: !GetAtt FastAPISnapStartFunctionRole.Arn

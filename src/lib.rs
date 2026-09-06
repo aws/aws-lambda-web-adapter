@@ -33,7 +33,7 @@
 //!         let mut adapter = Adapter::new(&options)?;
 //!         
 //!         adapter.register_default_extension();
-//!         adapter.check_init_health().await;
+//!         adapter.check_init_health().await?;
 //!         adapter.run().await
 //!     })
 //! }
@@ -63,6 +63,7 @@
 //! with `InvokeMode: RESPONSE_STREAM`.
 
 mod readiness;
+mod snapstart;
 
 // Environment variable names (AWS_LWA_ prefix)
 const ENV_PORT: &str = "AWS_LWA_PORT";
@@ -78,7 +79,16 @@ const ENV_ENABLE_COMPRESSION: &str = "AWS_LWA_ENABLE_COMPRESSION";
 const ENV_INVOKE_MODE: &str = "AWS_LWA_INVOKE_MODE";
 const ENV_AUTHORIZATION_SOURCE: &str = "AWS_LWA_AUTHORIZATION_SOURCE";
 const ENV_ERROR_STATUS_CODES: &str = "AWS_LWA_ERROR_STATUS_CODES";
+const ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH: &str = "AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH";
+const ENV_SNAPSTART_AFTER_RESTORE_PATH: &str = "AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH";
 const ENV_LAMBDA_RUNTIME_API_PROXY: &str = "AWS_LWA_LAMBDA_RUNTIME_API_PROXY";
+const ENV_POOL_IDLE_TIMEOUT_SECONDS: &str = "AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS";
+
+/// Default idle-connection keep-alive for the adapter's inner-app HTTP client,
+/// used when [`ENV_POOL_IDLE_TIMEOUT_SECONDS`] is unset or unparseable.
+const DEFAULT_POOL_IDLE_TIMEOUT_SECONDS: u64 = 4;
+
+const ENV_READINESS_CHECK_TIMEOUT_SECONDS: &str = "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS";
 
 // Deprecated environment variable names (without prefix)
 const ENV_PORT_DEPRECATED: &str = "PORT";
@@ -104,16 +114,21 @@ use http::{
     Method, StatusCode,
 };
 use http_body::Body as HttpBody;
-use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Empty};
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use lambda_http::request::RequestContext;
 pub use lambda_http::tracing;
 use lambda_http::Body;
 pub use lambda_http::Error;
+
+// Re-export the body types that appear in the public `Service::Response`
+// (`Response<BoxBody<Bytes, Error>>`), so downstream consumers driving the
+// `Adapter` as a `tower::Service` can name that type without taking their own
+// direct dependency on `bytes` / `http-body-util`.
+pub use bytes::Bytes;
+pub use http_body_util::combinators::BoxBody;
 use lambda_http::{Request, RequestExt, Response};
-use readiness::Checkpoint;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::{
@@ -126,8 +141,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{net::TcpStream, time::timeout};
-use tokio_retry::{strategy::FixedInterval, Retry};
+use tokio::time::timeout;
 use tower::{Service, ServiceBuilder};
 use tower_http::compression::CompressionLayer;
 use url::Url;
@@ -349,6 +363,36 @@ pub struct AdapterOptions {
     /// the adapter will return an error to Lambda instead of the response.
     /// This can be useful for triggering Lambda retry behavior.
     pub error_status_codes: Option<Vec<u16>>,
+
+    /// Inner-app path POSTed before the SnapStart snapshot is taken.
+    /// When set, the adapter notifies the app so it can drain resources.
+    /// Default: `None` (phase skipped).
+    pub snapstart_before_checkpoint_path: Option<String>,
+
+    /// Inner-app path POSTed after the SnapStart restore completes.
+    /// When set, the adapter notifies the app so it can reconnect / reseed.
+    /// Default: `None` (phase skipped).
+    pub snapstart_after_restore_path: Option<String>,
+
+    /// Idle-connection keep-alive for the adapter's HTTP client to the inner app.
+    ///
+    /// Configurable via `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` (fractional seconds
+    /// allowed, e.g. `0.5`). Default: 4 seconds.
+    pub pool_idle_timeout: Duration,
+
+    /// Bound on the readiness check: how long the adapter waits for the inner app
+    /// to report ready before giving up. Applied to both the initial (cold-start)
+    /// readiness check and the post-SnapStart-restore readiness check.
+    ///
+    /// Configurable via `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (fractional
+    /// seconds allowed, e.g. `0.5`).
+    /// `None` (the default) means **unbounded**: the adapter waits indefinitely for
+    /// the app to become ready, preserving the historical behavior. Setting it bounds
+    /// both checks; on the restore check a timeout fails the restore.
+    ///
+    /// Note: the `async_init` initial-readiness path retains its own fixed ~9.8s
+    /// bound and is unaffected by this option.
+    pub readiness_check_timeout: Option<Duration>,
 }
 
 /// Helper to get env var with deprecation warning for old name
@@ -435,6 +479,14 @@ impl Default for AdapterOptions {
             error_status_codes: env::var(ENV_ERROR_STATUS_CODES)
                 .ok()
                 .map(|codes| parse_status_codes(&codes)),
+            snapstart_before_checkpoint_path: env::var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH)
+                .ok()
+                .filter(|p| !p.is_empty()),
+            snapstart_after_restore_path: env::var(ENV_SNAPSTART_AFTER_RESTORE_PATH)
+                .ok()
+                .filter(|p| !p.is_empty()),
+            pool_idle_timeout: pool_idle_timeout_from_env(),
+            readiness_check_timeout: readiness_check_timeout_from_env(),
         }
     }
 }
@@ -503,6 +555,243 @@ fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
     }
 }
 
+/// Percent-decode `input` a single pass. Returns `None` if a `%` escape is
+/// malformed (not followed by two hex digits) — the caller treats a decode
+/// failure as an ambiguous input and fails closed.
+fn percent_decode_once(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Need two hex digits after '%'.
+            let hi = bytes.get(i + 1).copied()?;
+            let lo = bytes.get(i + 2).copied()?;
+            let h = (hi as char).to_digit(16)?;
+            let l = (lo as char).to_digit(16)?;
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    // The decoded bytes must remain valid UTF-8 to be a comparable path.
+    String::from_utf8(out).ok()
+}
+
+/// Canonicalize a path into a list of lowercased segments for the strict SnapStart
+/// hook guard.
+///
+/// "Strict" means the blocked equivalence class is deliberately wide, NOT that every
+/// input is blocked on doubt. The two halves differ and the difference is
+/// load-bearing: the **configured** side fails closed (an unguardable hook path is
+/// rejected at startup by [`hook_target`]), while the **request** side fails open (an
+/// undecidable request path is forwarded, not 403'd). See the `None` discussion below
+/// for why forwarding is safe — do not "tighten" it into a 403 without reading it.
+///
+/// The guard must block *every* spelling that the downstream app router would
+/// resolve to the configured hook route, so this over-approximates: it
+/// percent-decodes (a single pass, matching the router), splits on `/`,
+/// drops empty segments (collapsing `//`, leading/trailing slashes), resolves
+/// `.`/`..`, and lowercases each segment.
+///
+/// An encoded slash (`%2f`) is decoded to a literal `/` *before* splitting, so a
+/// spelling like `/snapstart/%2fafter` collapses onto the same segment list as
+/// the hook route and is caught — while a genuinely distinct route that merely
+/// contains `%2f` produces a different segment list and is left alone. This keeps
+/// the strictness targeted: it only bites paths that canonicalize onto the hook.
+///
+/// Returns `None` only for two genuinely undecidable inputs: a malformed `%` escape,
+/// or a byte sequence that is not UTF-8 once decoded. A control/null byte is *not*
+/// undecidable — it is stripped before canonicalization, which *widens* the blocked
+/// equivalence class (`/snapstart/af%00ter` and `/snapstart/after%0A` canonicalize
+/// onto the hook route and are blocked), because a router can still resolve such a
+/// path to the hook: Python's `$` matches before a trailing newline.
+///
+/// [`matches_hook_path`] treats a `None` **request** path as *not the hook* and
+/// passes it through (see `matches_hook_path` and
+/// `test_matches_hook_path_undecidable_passes_through`); that is safe because
+/// [`hook_target`] guarantees no hook route contains a literal `%`. A `None` on the
+/// **configured** side is rejected outright by [`hook_target`], failing
+/// initialization rather than leaving the route partially guarded.
+fn canonicalize_hook_path(path: &str) -> Option<Vec<String>> {
+    // Percent-decode a SINGLE pass, mirroring what the downstream app router
+    // does. A router decodes exactly once, so `/snapstart/%61fter` reaches the
+    // app as `/snapstart/after` (and must be guarded), while `/snapstart/%2561fter`
+    // reaches it as the literal `/snapstart/%61fter` (a different route the app
+    // does NOT resolve to the hook). Decoding more than once would over-decode
+    // relative to the router — buying no extra protection while making a validly
+    // single-encoded path like `/reports/100%25` (i.e. `/reports/100%`) look
+    // undecidable and get a false 403. A malformed escape or non-UTF-8 result
+    // still yields None — the only two cases that do; see the contract above.
+    let current = percent_decode_once(path)?;
+    // Control bytes are NOT "undecidable": a downstream router can still resolve a
+    // path that carries them (e.g. Python's `$` matches immediately before a
+    // trailing `\n`, so Starlette resolves `/hook\n` to the `/hook` route). Bailing
+    // out with `None` here would make `matches_hook_path` pass such a request
+    // through and leave the hook route externally reachable. So STRIP control bytes
+    // (including DEL) and keep canonicalizing — `/snapstart/after%0A` then
+    // canonicalizes to `["snapstart", "after"]` and is blocked. A malformed `%`
+    // escape / non-UTF-8 result is different (the `?` above already returned None
+    // for it) and keeps its pass-through, avoiding the `/reports/100%` false 403.
+    let current: String = current.chars().filter(|c| !c.is_control()).collect();
+    let mut segments: Vec<String> = Vec::new();
+    for seg in current.split('/') {
+        // Drop matrix / path parameters (everything from the first `;` in a
+        // segment). Several supported frameworks strip these before routing —
+        // Spring MVC's UrlPathHelper defaults to removeSemicolonContent=true, and
+        // servlet containers strip `;jsessionid` — so `/snapstart/after;x=1`
+        // resolves to `/snapstart/after`. The guard must block that spelling too;
+        // stripping here (before empty/`.`/`..` classification) keeps the guard's
+        // equivalence class aligned with the app router. This runs on both sides
+        // via `hook_target`, so it stays symmetric.
+        let seg = seg.split(';').next().unwrap_or(seg);
+        match seg {
+            "" | "." => continue, // collapse empty segments and `.`
+            ".." => {
+                segments.pop(); // resolve parent segment
+            }
+            s => segments.push(s.to_ascii_lowercase()),
+        }
+    }
+    Some(segments)
+}
+
+/// Treats an empty configured value as unset.
+///
+/// An empty `AWS_LWA_SNAPSTART_*_PATH` means "this hook does not fire". Collapsing
+/// it to `None` at the single point where [`Adapter::new`] reads it keeps the guard
+/// target and the hook's POST target from disagreeing — see
+/// `test_empty_hook_path_is_normalized_on_both_sides`.
+fn non_empty(value: &Option<String>) -> Option<String> {
+    value.as_deref().filter(|v| !v.is_empty()).map(str::to_string)
+}
+
+/// Precomputes the guard target for a configured hook path.
+///
+/// Runs the operator-configured path through the SAME `Url::set_path`
+/// transformation that `SnapStartHooks::post_hook` uses to reach the app
+/// (`domain.set_path(configured)`), so the guard protects exactly the route the
+/// app actually serves — not the raw env-var string. Returns:
+///
+/// * `Ok(None)` — no hook configured (unset, or set to the empty string).
+/// * `Ok(Some(segments))` — the normal case: the post-`set_path` route
+///   canonicalized (percent-decode, collapse `//`/`.`/`..`, case-fold).
+/// * `Err(_)` — the route cannot be guarded exactly. Three cases, all always a
+///   misconfiguration of a control-plane path, and all rejected rather than
+///   downgraded to a weaker guard or to no guard at all (the app still *serves*
+///   such a route, so anything less leaves a state-mutating route reachable):
+///   1. It could not be canonicalized at all (a malformed `%` escape, or non-UTF-8
+///      after decoding).
+///   2. Its canonical form contains a literal `%`. This is what makes
+///      [`matches_hook_path`]'s pass-through of an undecidable *request* path safe
+///      on every framework, without modelling per-framework decoding: an
+///      undecidable request path is either rejected by the router outright (Node
+///      throws `URIError`, so Express answers 400; Go and Spring likewise 400) or
+///      decoded leniently into a path containing a literal `%` or U+FFFD (Python's
+///      `unquote`) — and neither can equal a `%`-free hook route.
+///   3. It collapses to the app root (`/`, `//`, `/..`, `/.`, `/foo/..`, `/%2f`, …).
+///      Guarding the root would 403 all normal traffic, so the guard cannot cover
+///      it — and `SnapStartHooks::post_hook` would still POST to `/` on every
+///      lifecycle event, which is a 405 on an app that does not handle `POST /`
+///      and fails the phase. A hook path must be one "your normal application
+///      traffic does not use", which the root never is.
+///
+/// `Adapter::new` propagates the error, failing initialization with an actionable
+/// message rather than starting up with the hook route reachable or with a hook
+/// that fails every restore.
+fn hook_target(domain: &Url, configured: &Option<String>) -> Result<Option<Vec<String>>, Error> {
+    let Some(configured) = configured.as_deref() else {
+        return Ok(None);
+    };
+    if configured.is_empty() {
+        return Ok(None);
+    }
+    // Normalize the configured path exactly as post_hook will send it, so the two
+    // sides of the guard comparison cannot diverge by construction.
+    let mut u = domain.clone();
+    u.set_path(configured);
+    let outbound = u.path().to_string();
+    match canonicalize_hook_path(&outbound) {
+        // A configured path that canonicalizes to the root (e.g. "/", "//", "/..",
+        // "/.", "/foo/..", "/%2f") cannot be guarded: matching it would 403 every
+        // request to `/`. Reject it rather than silently disabling the guard, because
+        // `after_restore` POSTs the RAW configured path regardless of the guard
+        // target, so "no hook" here still leaves the hook firing at `/`. This check
+        // must live AFTER canonicalization: a raw pre-check on the configured string
+        // misses the spellings that only collapse to root once `..`/`.`/encoded-slash
+        // resolve.
+        Some(segments) if segments.is_empty() => Err(Error::from(format!(
+            "SnapStart hook path {configured:?} collapses to the application root \
+             (normalized to {outbound:?}). It cannot be guarded — matching it would return 403 \
+             for every request to `/` — and the hook would still POST to `/` on every SnapStart \
+             lifecycle event, failing the phase on any app that does not handle `POST /`. Choose \
+             a dedicated path your normal traffic does not use, such as `/snapstart/after`."
+        ))),
+        // A literal `%` anywhere in the canonical route breaks the invariant that
+        // lets the request side pass undecidable paths through (see case 2 above).
+        Some(segments) if segments.iter().any(|s| s.contains('%')) => Err(Error::from(format!(
+            "SnapStart hook path {configured:?} resolves to a route containing a literal `%` \
+             ({outbound:?} decodes to /{}). The 403 guard cannot cover every spelling a web \
+             framework resolves onto such a route, so it is rejected rather than left partially \
+             protected. Choose a hook path without a percent sign.",
+            segments.join("/")
+        ))),
+        Some(segments) => Ok(Some(segments)),
+        None => Err(Error::from(format!(
+            "SnapStart hook path {configured:?} is not canonicalizable after URL normalization \
+             (normalized to {outbound:?}): it contains a malformed % escape or a byte sequence \
+             that is not UTF-8 once decoded. The 403 guard cannot cover the encoded spellings \
+             of such a route, so it is rejected rather than left partially protected. Choose a \
+             hook path without a percent sign."
+        ))),
+    }
+}
+
+/// True if the outbound request path resolves to the precomputed hook route.
+///
+/// Both sides derive from `Url::set_path`: `want` is computed by [`hook_target`]
+/// from `domain.set_path(configured)`, and `outbound_request_path` is the request's
+/// `app_url.path()` (also post-`set_path`; see `fetch_response`). Because the two
+/// sides share the identical normalization, a configured value that `set_path`
+/// rewrites (e.g. `/snapstart\after` → `/snapstart/after`) is guarded on its
+/// rewritten form, closing the divergence where the app served a route the guard
+/// did not protect.
+///
+/// The request path is canonicalized and compared as segment lists. An undecidable
+/// request path (a malformed escape, or non-UTF-8 once decoded) passes through.
+/// That is safe — not merely a heuristic — because [`hook_target`] guarantees
+/// `want` contains no literal `%`: a router either rejects an undecidable path
+/// outright (400) or decodes it leniently to something containing a literal `%` or
+/// U+FFFD, and neither can equal a `%`-free route. Passing through is what keeps a
+/// request like `/reports/100%` from taking a false 403 under an unrelated hook.
+///
+/// Single-target convenience form, used by the tests; production goes through
+/// [`matches_any_hook_path`] so the request path is canonicalized only once.
+#[cfg(test)]
+fn matches_hook_path(want: &Option<Vec<String>>, outbound_request_path: &str) -> bool {
+    matches_any_hook_path(&[want], outbound_request_path)
+}
+
+/// [`matches_hook_path`] against several targets, canonicalizing the request path
+/// **once**.
+///
+/// This runs on every invocation, and both examples plus the guide configure both
+/// hooks — so calling the single-target form twice would repeat the percent-decode,
+/// control-byte filter, split and per-segment `to_ascii_lowercase` (and their
+/// allocations) for an identical result. Costs nothing when no hook is configured:
+/// the all-`None` check short-circuits before canonicalizing.
+fn matches_any_hook_path(wants: &[&Option<Vec<String>>], outbound_request_path: &str) -> bool {
+    if wants.iter().all(|w| w.is_none()) {
+        return false;
+    }
+    let Some(got) = canonicalize_hook_path(outbound_request_path) else {
+        return false; // undecidable: not the hook, passes through
+    };
+    wants.iter().any(|w| w.as_ref().is_some_and(|want| want == &got))
+}
+
 /// The Lambda Web Adapter.
 ///
 /// This is the main struct that handles forwarding Lambda events to your web application.
@@ -530,13 +819,14 @@ fn strip_forbidden_header_bytes(s: &str) -> Cow<'_, [u8]> {
 /// let mut adapter = Adapter::new(&options)?;
 ///
 /// adapter.register_default_extension();
-/// adapter.check_init_health().await;
+/// adapter.check_init_health().await?;
 /// adapter.run().await
 /// # }
 /// ```
 #[derive(Clone)]
 pub struct Adapter<C, B> {
     client: Arc<Client<C, B>>,
+    restored_client: Arc<OnceLock<Arc<Client<C, B>>>>,
     healthcheck_url: Url,
     healthcheck_protocol: Protocol,
     healthcheck_healthy_status: Vec<u16>,
@@ -549,18 +839,236 @@ pub struct Adapter<C, B> {
     invoke_mode: LambdaInvokeMode,
     authorization_source: Option<String>,
     error_status_codes: Option<Vec<u16>>,
+    snapstart_before_checkpoint_path: Option<String>,
+    snapstart_after_restore_path: Option<String>,
+    /// Precomputed guard target for the before-checkpoint hook path, derived from
+    /// `domain.set_path(configured)` so it matches the route the app actually
+    /// serves (see [`hook_target`]).
+    hook_target_before_checkpoint: Option<Vec<String>>,
+    /// Precomputed guard target for the after-restore hook path (see [`hook_target`]).
+    hook_target_after_restore: Option<Vec<String>>,
+    pool_idle_timeout: Duration,
+    readiness_check_timeout: Option<Duration>,
+}
+
+/// Builds the hyper client used to talk to the inner web application.
+///
+/// Shared by [`Adapter::new`] and the SnapStart after-restore hook so the
+/// post-restore client is built identically to the original. `idle_timeout` is the
+/// idle-connection keep-alive, resolved from [`AdapterOptions::pool_idle_timeout`]
+/// (env `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`, default 4 seconds).
+///
+/// When `pooling` is [`Pooling::Disabled`] the client sets
+/// `pool_max_idle_per_host(0)`, which turns hyper's pool off outright
+/// (`Config::is_enabled()` is `max_idle_per_host > 0`): a finished connection is
+/// dropped rather than parked, so reuse is impossible *by construction*.
+///
+/// That distinction is load-bearing, and a zero `idle_timeout` is NOT a substitute.
+/// With the pool enabled, reuse is decided at checkout by
+/// `now.saturating_duration_since(idle_at) > timeout`; that saturates to `ZERO` when
+/// the recorded instant is ahead of `now`, and `ZERO > ZERO` is false, so the entry
+/// is treated as fresh and handed out. A monotonic clock that has not advanced
+/// across a restore is exactly the condition hyper#3810 / rust-lang/rust#79462
+/// describe — so an expiry-based scheme would depend on the very clock the
+/// workaround exists to distrust.
+///
+/// This function reads no environment: the caller decides, so the post-restore
+/// rebuild cannot silently inherit the pre-snapshot restriction.
+fn build_client(idle_timeout: Duration, pooling: Pooling) -> Client<HttpConnector, Body> {
+    let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
+    builder.pool_idle_timeout(idle_timeout);
+    if pooling == Pooling::Disabled {
+        builder.pool_max_idle_per_host(0);
+    }
+    builder.build(HttpConnector::new())
+}
+
+/// Builds the client used to talk to the Lambda Runtime API (RAPID) for extension
+/// registration.
+///
+/// Idle pooling is disabled. Under SnapStart, a connection parked here is captured in
+/// the snapshot and dead after restore — the same hazard `lambda_runtime` handles by
+/// calling `reset_pool()` on its own RAPID client in the restore lifecycle. Nothing
+/// resets or re-establishes this one, and [`Adapter::register_default_extension`]
+/// terminates the process with `exit(1)` if its request fails, so handing out a dead
+/// connection would kill a restored environment before it serves anything.
+///
+/// Pooling costs nothing to give up here: this client issues exactly two requests —
+/// `register`, then the long poll for the first extension event — and the long poll's
+/// own in-flight connection is unaffected by the idle-pool setting.
+fn runtime_api_client() -> Client<HttpConnector, Body> {
+    let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
+    builder.pool_max_idle_per_host(0);
+    builder.build(HttpConnector::new())
+}
+
+/// Whether a client may keep idle connections alive for reuse. See [`build_client`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pooling {
+    /// Normal keep-alive, bounded by the configured idle timeout.
+    Enabled,
+    /// No connection is retained at all — required before a SnapStart snapshot.
+    Disabled,
+}
+
+/// Connection-pool policy for the client [`Adapter::new`] builds — the one used
+/// before a SnapStart snapshot is taken.
+///
+/// Disabled under SnapStart, so no connection can be captured in the snapshot and
+/// handed out — dead — after a restore (hyper#3810, rust-lang/rust#79462).
+///
+/// Why the pool must be *off* rather than expiry-bounded, measured on a deployed
+/// SnapStart container function: `CLOCK_MONOTONIC` does not advance across the
+/// snapshot gap. One restore showed the monotonic clock moving **0.54s** while wall
+/// time moved **161s**. hyper decides reuse with
+/// `now.saturating_duration_since(idle_at) > idle_timeout`, so a connection pooled
+/// before the snapshot reads as half a second idle after restore no matter how long
+/// the snapshot actually sat — fresh under any sane timeout, and dead. No idle
+/// timeout, including `Duration::ZERO`, can fix that (`ZERO > ZERO` is false).
+///
+/// `run()` additionally rebuilds a fresh client in the after-restore hook, but
+/// keeping this one safe by construction also protects a consumer driving the
+/// `Service` impl directly, who never triggers that hook — and that consumer has no
+/// other protection, so it must not depend on the clock.
+///
+/// The cost is that a pre-snapshot readiness poll reconnects on every 10ms attempt
+/// (measured: 27 connections per 300ms of polling, versus 1 with keep-alive). That is
+/// confined to init, which under SnapStart runs once per published version rather
+/// than per restore.
+///
+/// The configured idle timeout is NOT lost: it is kept on
+/// [`Adapter::pool_idle_timeout`] and applied to the after-restore rebuild, whose
+/// pool starts empty and therefore cannot hold a snapshotted connection. That is what
+/// makes `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` effective for the invocations that
+/// actually serve traffic, instead of a no-op for the life of the environment.
+///
+/// The two sites deliberately disagree — pooling off here, on in `after_restore` —
+/// and that is sound because the clock anomaly is confined to the snapshot boundary.
+/// Measured after restore on the same deployment, `CLOCK_MONOTONIC` tracks wall time
+/// exactly (+6.079s / +6.059s monotonic against +6.1s / +6.0s wall), and requests
+/// separated by idle gaps longer than the configured 4s keep-alive all succeeded. A
+/// client built after restore holds only post-restore entries, so its expiry
+/// accounting is reliable; this one may hold pre-boundary entries, so its is not.
+fn base_client_pooling() -> Pooling {
+    if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
+        Pooling::Disabled
+    } else {
+        Pooling::Enabled
+    }
+}
+
+/// Reads a `Duration` in seconds from environment variable `name`, falling back to
+/// `default_secs` when the var is unset or unusable. Surrounding whitespace is
+/// tolerated.
+///
+/// Accepts fractional seconds (`0.5`), matching
+/// [`readiness_check_timeout_from_env`] — the two knobs are siblings and taking
+/// different numeric formats would be a trap. A value that is set but unusable (a
+/// stray unit suffix like `30s`, non-numeric, negative, NaN, infinity, or an
+/// overflowing magnitude) emits a `warn!` before falling back, for the same reason
+/// its sibling does: a set value silently becoming the default is the opposite of
+/// the operator's intent, and silence makes the misconfiguration invisible.
+fn duration_secs_from_env(name: &str, default_secs: u64) -> Duration {
+    let default = Duration::from_secs(default_secs);
+    let Ok(raw) = env::var(name) else {
+        return default; // unset: silent, this is the normal case
+    };
+    let trimmed = raw.trim();
+    match trimmed.parse::<f64>().map(Duration::try_from_secs_f64) {
+        Ok(Ok(d)) => d,
+        // Negative, NaN, infinite, or beyond Duration's range.
+        Ok(Err(_)) | Err(_) => {
+            tracing::warn!(
+                variable = %name,
+                value = %trimmed,
+                default = ?default,
+                "environment variable is set but is not a usable number of seconds \
+                 (e.g. use `4` or `0.5`, not `4s`); falling back to the default"
+            );
+            default
+        }
+    }
+}
+
+/// Reads the inner-app connection pool idle timeout from
+/// [`ENV_POOL_IDLE_TIMEOUT_SECONDS`] (`AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`).
+/// Falls back to [`DEFAULT_POOL_IDLE_TIMEOUT_SECONDS`] when unset or unparseable.
+fn pool_idle_timeout_from_env() -> Duration {
+    duration_secs_from_env(ENV_POOL_IDLE_TIMEOUT_SECONDS, DEFAULT_POOL_IDLE_TIMEOUT_SECONDS)
+}
+
+/// Reads the readiness-check timeout from
+/// [`ENV_READINESS_CHECK_TIMEOUT_SECONDS`] (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`).
+/// Accepts fractional seconds (e.g. `0.5`). Returns `None` — an unbounded readiness
+/// wait (historical behavior) — in these cases:
+/// * **unset**: silent (the default).
+/// * **`<= 0` (including `0`)**: a zero/negative value reads as "fail fast" but a
+///   zero timeout would expire instantly and fail every check, so it is treated as
+///   "no bound" — and this emits a `warn!` so the non-obvious mapping is visible.
+/// * **set but unusable** (a stray suffix like `10s`, non-numeric, NaN, infinity,
+///   or an overflowing magnitude): emits a `warn!` before falling back, because
+///   silently ignoring a misconfigured bound would let a sync-init cold start hang
+///   to the Lambda function timeout with no diagnostic.
+fn readiness_check_timeout_from_env() -> Option<Duration> {
+    // Unset -> silent unbounded (historical default).
+    let raw = env::var(ENV_READINESS_CHECK_TIMEOUT_SECONDS).ok()?;
+    let trimmed = raw.trim();
+
+    // Parse as fractional seconds; a value that does not parse as a finite,
+    // representable, positive Duration is REJECTED and falls back to unbounded.
+    // In every set-but-rejected case we WARN, because a set value silently
+    // becoming "wait forever" is the opposite of the operator's intent and would
+    // let a sync-init cold start hang to the Lambda function timeout with no
+    // signal. This includes `<= 0` (including `0`): a zero/negative bound reads
+    // naturally as "fail fast / don't wait", but a zero timeout would expire
+    // instantly and fail every check, so it is treated as "no bound" — and the
+    // warning makes that non-obvious mapping visible.
+    match trimmed.parse::<f64>() {
+        Ok(secs) if secs <= 0.0 => {
+            tracing::warn!(
+                value = %trimmed,
+                "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS is <= 0; a zero/negative bound is \
+                 treated as no timeout (waiting for readiness indefinitely), not fail-fast"
+            );
+            None
+        }
+        Ok(secs) => match Duration::try_from_secs_f64(secs) {
+            Ok(d) if !d.is_zero() => Some(d),
+            // secs > 0 but not representable as a Duration (NaN is caught by the
+            // <= 0.0 arm not matching; this covers infinity / overflow).
+            _ => {
+                tracing::warn!(
+                    value = %trimmed,
+                    "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS is set but out of range; \
+                     ignoring it and waiting for readiness without a timeout"
+                );
+                None
+            }
+        },
+        Err(_) => {
+            tracing::warn!(
+                value = %trimmed,
+                "AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS is set but not a number of seconds \
+                 (e.g. use `10` or `0.5`, not `10s`); ignoring it and waiting for readiness \
+                 without a timeout"
+            );
+            None
+        }
+    }
 }
 
 impl Adapter<HttpConnector, Body> {
     /// Creates a new HTTP Adapter instance.
     ///
     /// This function initializes a new HTTP client configured to communicate with
-    /// your web application. When Lambda SnapStart is detected
-    /// (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`), connection pooling is
-    /// disabled to prevent stale connections after restore, where
-    /// `CLOCK_MONOTONIC` inconsistencies can cause hyper's pool to reuse dead
-    /// connections. Otherwise, a 4-second idle timeout is used for connection
-    /// pooling.
+    /// your web application. The idle-connection keep-alive comes from
+    /// [`AdapterOptions::pool_idle_timeout`] (`AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`,
+    /// default 4 seconds). Under SnapStart
+    /// (`AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`) this client is built with idle
+    /// keep-alive disabled instead, so no connection can be captured in the snapshot
+    /// and handed out dead after a restore; the configured value is retained and
+    /// applied to the client rebuilt in the after-restore hook, which is what serves
+    /// invocations. See the private `base_client_pooling` for the rationale.
     ///
     /// # Arguments
     ///
@@ -575,6 +1083,9 @@ impl Adapter<HttpConnector, Body> {
     /// Returns an error if:
     /// - The configured host, port, or readiness check path contain invalid URL characters
     /// - TCP protocol is configured but the URL is missing host or port
+    /// - A SnapStart hook path cannot be guarded: it is not canonicalizable, its
+    ///   decoded form contains a literal `%`, it collapses to the application root,
+    ///   or it resolves to the same route as `AWS_LWA_PASS_THROUGH_PATH`
     ///
     /// # Examples
     ///
@@ -585,19 +1096,7 @@ impl Adapter<HttpConnector, Body> {
     /// let adapter = Adapter::new(&options).expect("Failed to create adapter");
     /// ```
     pub fn new(options: &AdapterOptions) -> Result<Adapter<HttpConnector, Body>, Error> {
-        let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
-
-        // When running under SnapStart, CLOCK_MONOTONIC can be inconsistent after
-        // restore, causing hyper's pool to reuse dead connections (hyper#3810,
-        // rust-lang/rust#79462). Disable pooling in that case. For localhost
-        // communication the overhead of new TCP connections is negligible.
-        if env::var("AWS_LAMBDA_INITIALIZATION_TYPE").as_deref() == Ok("snap-start") {
-            builder.pool_max_idle_per_host(0);
-        } else {
-            builder.pool_idle_timeout(Duration::from_secs(4));
-        }
-
-        let client = builder.build(HttpConnector::new());
+        let client = build_client(options.pool_idle_timeout, base_client_pooling());
 
         let schema = "http";
 
@@ -622,6 +1121,56 @@ impl Adapter<HttpConnector, Body> {
                 ))
             })?;
 
+        // Normalize an empty hook path to "unset" BEFORE anything reads it, so the
+        // guard target and the path the hook POSTs to cannot disagree. `hook_target`
+        // treats `Some("")` as "no hook", but `SnapStartHooks` would still take its
+        // `if let Some(path)` branch and POST to `Url::set_path("")` — which is `/`,
+        // the unguarded application root. Env-derived options already drop empties;
+        // this covers an `AdapterOptions` built directly.
+        let snapstart_before_checkpoint_path = non_empty(&options.snapstart_before_checkpoint_path);
+        let snapstart_after_restore_path = non_empty(&options.snapstart_after_restore_path);
+
+        // Precompute the SnapStart hook guard targets while `domain` is still in
+        // scope, so the guard compares against the route the app actually serves
+        // (`domain.set_path(configured)`) rather than the raw configured string.
+        // A hook path the guard cannot cover fails initialization here rather than
+        // starting up with a state-mutating route left externally reachable.
+        let hook_target_before_checkpoint = hook_target(&domain, &snapstart_before_checkpoint_path)?;
+        let hook_target_after_restore = hook_target(&domain, &snapstart_after_restore_path)?;
+
+        // A hook path that resolves to the same route as the pass-through path is
+        // unguardable in a different way: `fetch_response` rewrites the path to
+        // `pass_through_path` for a PassThrough POST *before* the guard runs, so every
+        // non-HTTP trigger event would canonicalize onto the hook route and get a 403
+        // instead of reaching the app. Fail here rather than silently swallowing that
+        // whole class of events with only a per-invocation warning.
+        //
+        // Only relevant when a hook exists. And note the `.unwrap_or(None)`:
+        // `pass_through_path` is unrelated configuration read straight from the
+        // environment, so a value `hook_target` would reject (root-collapsing,
+        // `%`-bearing, non-canonicalizable) must NOT fail initialization here — it is
+        // also incapable of colliding, since hook targets are canonicalizable and
+        // non-empty by construction and so nothing rewritten onto such a path can
+        // canonicalize onto one.
+        if hook_target_before_checkpoint.is_some() || hook_target_after_restore.is_some() {
+            let pass_through_target = hook_target(&domain, &Some(options.pass_through_path.clone())).unwrap_or(None);
+            for (configured, target) in [
+                (&snapstart_before_checkpoint_path, &hook_target_before_checkpoint),
+                (&snapstart_after_restore_path, &hook_target_after_restore),
+            ] {
+                if target.is_some() && *target == pass_through_target {
+                    return Err(Error::from(format!(
+                        "SnapStart hook path {:?} resolves to the same route as the pass-through path \
+                         {:?} (AWS_LWA_PASS_THROUGH_PATH). Non-HTTP trigger events are rewritten onto \
+                         that path before the hook guard runs, so every such event would be rejected \
+                         with 403 instead of reaching your application. Choose a different hook path.",
+                        configured.as_deref().unwrap_or_default(),
+                        options.pass_through_path
+                    )));
+                }
+            }
+        }
+
         // Validate TCP protocol requirements
         if options.readiness_check_protocol == Protocol::Tcp {
             if healthcheck_url.host().is_none() {
@@ -641,6 +1190,7 @@ impl Adapter<HttpConnector, Body> {
 
         Ok(Adapter {
             client: Arc::new(client),
+            restored_client: Arc::new(OnceLock::new()),
             healthcheck_url,
             healthcheck_protocol: options.readiness_check_protocol,
             healthcheck_healthy_status: options.readiness_check_healthy_status.clone(),
@@ -653,7 +1203,19 @@ impl Adapter<HttpConnector, Body> {
             invoke_mode: options.invoke_mode,
             authorization_source: options.authorization_source.clone(),
             error_status_codes: options.error_status_codes.clone(),
+            snapstart_before_checkpoint_path,
+            snapstart_after_restore_path,
+            hook_target_before_checkpoint,
+            hook_target_after_restore,
+            pool_idle_timeout: options.pool_idle_timeout,
+            readiness_check_timeout: options.readiness_check_timeout,
         })
+    }
+
+    /// Returns the active inner-app HTTP client: the restored client if a
+    /// SnapStart restore has published one, otherwise the base client.
+    fn client(&self) -> &Arc<Client<HttpConnector, Body>> {
+        self.restored_client.get().unwrap_or(&self.client)
     }
 }
 
@@ -686,6 +1248,23 @@ impl Adapter<HttpConnector, Body> {
     ///
     /// Registers with the Lambda Extensions API and waits for the next event.
     /// This keeps the extension alive for the duration of the Lambda instance.
+    ///
+    /// The registration subscribes to **no events** (`{"events": []}`), deliberately.
+    /// Being registered at all is the entire point: Lambda only sends `SIGTERM` at
+    /// environment shutdown when an extension is registered, which is what the
+    /// graceful-shutdown feature relies on. Because nothing is subscribed, RAPID has
+    /// no event to deliver, so the `GET /event/next` call below never resolves — the
+    /// spawned task parks on it for the life of the process by design, and that is
+    /// what "keeps the extension alive".
+    ///
+    /// Under SnapStart that parked request is captured mid-flight in the snapshot and
+    /// is never re-established after a restore. That is harmless for the same reason:
+    /// it was never going to resolve, and RAPID's *registration* state is part of the
+    /// snapshotted microVM, so the effect survives even though the connection does
+    /// not. Verified on a deployed SnapStart container function — the restored
+    /// environment received `SIGTERM` 457s after restore, and the failure path below
+    /// (which would `exit(1)`) never fired across ~8 minutes and five restores.
+    /// Re-registering after restore would be robustness, not a fix.
     async fn register_extension_internal() -> Result<(), Error> {
         // Prefer the original (pre-proxy) value if apply_runtime_proxy_config() captured one.
         // Otherwise fall back to the current env var.
@@ -693,7 +1272,7 @@ impl Adapter<HttpConnector, Body> {
             Some(captured) => captured.clone().unwrap_or_else(|| "127.0.0.1:9001".to_string()),
             None => env::var(ENV_LAMBDA_RUNTIME_API).unwrap_or_else(|_| "127.0.0.1:9001".to_string()),
         };
-        let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(HttpConnector::new());
+        let client = runtime_api_client();
 
         let register_req = hyper::Request::builder()
             .method(Method::POST)
@@ -741,7 +1320,17 @@ impl Adapter<HttpConnector, Body> {
     /// - Allow the application to continue booting in the background
     ///
     /// The first request will re-check readiness if the application wasn't ready
-    /// during initialization.
+    /// during initialization. The async path always returns `Ok`.
+    ///
+    /// # Synchronous Initialization
+    ///
+    /// Without `async_init`, this waits for the app to report ready before the
+    /// Lambda runtime starts serving. If `readiness_check_timeout`
+    /// (`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`) is set and the app does not
+    /// become ready within it, this returns `Err`: init fails and no traffic is
+    /// served against an app that never came up. When the timeout is unset the
+    /// wait is unbounded and this returns `Ok` once the check completes
+    /// (historical behavior).
     ///
     /// # Examples
     ///
@@ -751,23 +1340,47 @@ impl Adapter<HttpConnector, Body> {
     /// # async fn example() -> Result<(), lambda_web_adapter::Error> {
     /// let options = AdapterOptions::default();
     /// let mut adapter = Adapter::new(&options)?;
-    /// adapter.check_init_health().await;
+    /// adapter.check_init_health().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn check_init_health(&mut self) {
+    pub async fn check_init_health(&mut self) -> Result<(), Error> {
         let ready_at_init = if self.async_init {
+            // async_init keeps its own fixed bound, independent of
+            // readiness_check_timeout (see AdapterOptions::readiness_check_timeout).
+            // A timeout here is non-fatal: the app keeps booting and the first
+            // request re-checks readiness.
+            // `is_ok()` means the wait COMPLETED within the bound; the readiness wait
+            // itself never reports "not ready" (it retries until it is).
             timeout(Duration::from_secs_f32(9.8), self.check_readiness())
                 .await
-                .unwrap_or_default()
+                .is_ok()
+        } else if let Some(t) = self.readiness_check_timeout {
+            // Bound the sync-init readiness wait when configured. On expiry, refuse
+            // to serve: fail init rather than admit traffic to an app that never
+            // reported ready — this is the point of configuring the bound.
+            match timeout(t, self.check_readiness()).await {
+                Ok(()) => true,
+                Err(_) => {
+                    return Err(Error::from(format!(
+                        "web application did not become ready within {t:?} \
+                         (AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS); failing initialization"
+                    )));
+                }
+            }
         } else {
-            self.check_readiness().await
+            // Unset: unbounded wait (historical behavior). It only returns once the
+            // app is ready, so reaching this point means ready.
+            self.check_readiness().await;
+            true
         };
         self.ready_at_init.store(ready_at_init, Ordering::SeqCst);
+        Ok(())
     }
 
-    /// Performs a single readiness check against the configured endpoint.
-    async fn check_readiness(&self) -> bool {
+    /// Waits for the app to report ready against the configured endpoint. Returns
+    /// only once it does; callers impose any bound with an external timeout.
+    async fn check_readiness(&self) {
         let url = self.healthcheck_url.clone();
         let protocol = self.healthcheck_protocol;
         self.is_web_ready(&url, &protocol).await
@@ -776,61 +1389,21 @@ impl Adapter<HttpConnector, Body> {
     /// Waits for the web application to become ready, with retries.
     ///
     /// Uses a fixed 10ms interval between retry attempts and logs progress
-    /// at increasing intervals (100ms, 500ms, 1s, 2s, 5s, 10s).
-    async fn is_web_ready(&self, url: &Url, protocol: &Protocol) -> bool {
-        let mut checkpoint = Checkpoint::new();
-        Retry::spawn(FixedInterval::from_millis(10), || {
-            if checkpoint.lapsed() {
-                tracing::info!(url = %url.to_string(), "app is not ready after {}ms", checkpoint.next_ms());
-                checkpoint.increment();
-            }
-            self.check_web_readiness(url, protocol)
-        })
-        .await
-        .is_ok()
+    /// at increasing intervals (100ms, 500ms, 1s, 2s, 5s, 10s). Returns only once
+    /// the app is ready — see [`readiness::wait_until_ready`].
+    async fn is_web_ready(&self, url: &Url, protocol: &Protocol) {
+        readiness::wait_until_ready(self.client(), url, *protocol, &self.healthcheck_healthy_status).await;
     }
 
     /// Performs a single readiness check using the configured protocol.
     ///
     /// For HTTP: Makes a GET request and checks if the status code is in the healthy range.
     /// For TCP: Attempts to establish a TCP connection.
+    ///
+    /// Used by tests; `Adapter`'s own readiness path goes through [`is_web_ready`](Self::is_web_ready).
+    #[cfg(test)]
     async fn check_web_readiness(&self, url: &Url, protocol: &Protocol) -> Result<(), i8> {
-        match protocol {
-            Protocol::Http => {
-                // url is already validated in Adapter::new(), this conversion should always succeed
-                // If it fails, it indicates a programming error, not a runtime condition
-                let uri: http::Uri = url
-                    .as_str()
-                    .parse()
-                    .expect("BUG: healthcheck_url should be valid - validated in Adapter::new()");
-
-                match self.client.get(uri).await {
-                    Ok(response) if self.healthcheck_healthy_status.contains(&response.status().as_u16()) => {
-                        tracing::debug!("app is ready");
-                        Ok(())
-                    }
-                    _ => {
-                        tracing::trace!("app is not ready");
-                        Err(-1)
-                    }
-                }
-            }
-            Protocol::Tcp => {
-                // url is already validated in Adapter::new(), host and port should exist
-                // If they don't, it indicates a programming error, not a runtime condition
-                let host = url
-                    .host_str()
-                    .expect("BUG: healthcheck_url should have host - validated in Adapter::new()");
-                let port = url
-                    .port()
-                    .expect("BUG: healthcheck_url should have port - validated in Adapter::new()");
-
-                match TcpStream::connect(format!("{}:{}", host, port)).await {
-                    Ok(_) => Ok(()),
-                    Err(_) => Err(-1),
-                }
-            }
-        }
+        readiness::check_web_readiness(self.client(), url, *protocol, &self.healthcheck_healthy_status).await
     }
 
     /// Starts the adapter and begins processing Lambda events.
@@ -860,14 +1433,60 @@ impl Adapter<HttpConnector, Body> {
     /// # }
     /// ```
     pub async fn run(self) -> Result<(), Error> {
+        let hooks = Arc::new(snapstart::SnapStartHooks::new(
+            self.restored_client.clone(),
+            self.client.clone(),
+            self.domain.clone(),
+            self.snapstart_before_checkpoint_path.clone(),
+            self.snapstart_after_restore_path.clone(),
+            self.healthcheck_url.clone(),
+            self.healthcheck_protocol,
+            self.healthcheck_healthy_status.clone(),
+            self.pool_idle_timeout,
+            self.readiness_check_timeout,
+        ));
         match (self.compression, self.invoke_mode) {
             (true, LambdaInvokeMode::Buffered) => {
                 let svc = ServiceBuilder::new().layer(CompressionLayer::new()).service(self);
-                lambda_http::run_concurrent(svc).await
+                Self::register_and_run(lambda_http::runtime_concurrent(svc), hooks).await
             }
-            (_, LambdaInvokeMode::Buffered) => lambda_http::run_concurrent(self).await,
-            (_, LambdaInvokeMode::ResponseStream) => lambda_http::run_with_streaming_response_concurrent(self).await,
+            (_, LambdaInvokeMode::Buffered) => {
+                Self::register_and_run(lambda_http::runtime_concurrent(self), hooks).await
+            }
+            (_, LambdaInvokeMode::ResponseStream) => {
+                Self::register_and_run(lambda_http::streaming_runtime_concurrent(self), hooks).await
+            }
         }
+    }
+
+    /// Registers the SnapStart hooks on `runtime` and starts the concurrent event loop.
+    ///
+    /// Each `run()` arm builds a different runtime type (buffered vs. streaming),
+    /// so the shared "register, then run" tail lives here as a generic helper.
+    ///
+    /// Applies [`TracingLayer`](lambda_http::lambda_runtime::layers::TracingLayer)
+    /// before registering the SnapStart hooks. The free
+    /// `lambda_runtime::run_concurrent` helper adds this layer internally, but this
+    /// crate builds the runtime via `lambda_http::runtime_concurrent` (to attach
+    /// `register_snapstart_resource`), which does not — so without it every
+    /// per-invocation adapter log line (including the SnapStart hook-path 403 warn)
+    /// would lose its `requestId` / `xrayTraceId` span fields.
+    async fn register_and_run<S>(
+        runtime: lambda_http::lambda_runtime::Runtime<S>,
+        hooks: Arc<snapstart::SnapStartHooks>,
+    ) -> Result<(), Error>
+    where
+        S: lambda_http::Service<lambda_http::lambda_runtime::LambdaInvocation, Response = (), Error = Error>
+            + Clone
+            + Send
+            + 'static,
+        S::Future: Send,
+    {
+        runtime
+            .layer(lambda_http::lambda_runtime::layers::TracingLayer::new())
+            .register_snapstart_resource(hooks)
+            .run_concurrent()
+            .await
     }
 
     /// Applies runtime API proxy configuration from environment variables.
@@ -930,7 +1549,7 @@ impl Adapter<HttpConnector, Body> {
     /// 4. Strips the base path if configured
     /// 5. Forwards the request to the web application
     /// 6. Returns the response (or error if status code is in error_status_codes)
-    async fn fetch_response(&self, event: Request) -> Result<Response<Incoming>, Error> {
+    async fn fetch_response(&self, event: Request) -> Result<Response<BoxBody<Bytes, Error>>, Error> {
         if self.async_init && !self.ready_at_init.load(Ordering::SeqCst) {
             self.is_web_ready(&self.healthcheck_url, &self.healthcheck_protocol)
                 .await;
@@ -944,16 +1563,61 @@ impl Adapter<HttpConnector, Body> {
         let (parts, body) = event.into_parts();
 
         // strip away Base Path if environment variable REMOVE_BASE_PATH is set.
+        // Strip exactly ONE leading occurrence, and only on a path-segment boundary,
+        // so `/api/api/order` -> `/api/order` (not `/order`) and `/apiorder` is left
+        // untouched (a partial-segment prefix must not be stripped). A configured
+        // trailing slash is normalized away first, so `/api/` behaves like `/api`
+        // (otherwise `/api/order` would fail the segment-boundary check and pass
+        // through unstripped, a regression for trailing-slash base paths).
         if let Some(base_path) = self.base_path.as_deref() {
-            let stripped = path.trim_start_matches(base_path);
-            if stripped.len() != path.len() {
-                tracing::debug!(base_path = %base_path, original = %path, stripped = %stripped, "stripped base path");
+            let base_path = base_path.strip_suffix('/').unwrap_or(base_path);
+            if let Some(rest) = path.strip_prefix(base_path) {
+                if rest.is_empty() || rest.starts_with('/') {
+                    let stripped = if rest.is_empty() { "/" } else { rest };
+                    tracing::debug!(base_path = %base_path, original = %path, stripped = %stripped, "stripped base path");
+                    path = stripped;
+                }
             }
-            path = stripped;
         }
 
         if matches!(request_context, RequestContext::PassThrough) && parts.method == Method::POST {
             path = self.pass_through_path.as_str();
+        }
+
+        // Block external traffic to the SnapStart hook paths. These routes are
+        // control-plane operations driven only by the adapter's own hook calls
+        // (which target `domain` directly and never reach this function).
+        //
+        // Build the outbound app URL FIRST, then run the guard against the exact
+        // path that will be sent (`app_url.path()`). `Url::set_path` applies the
+        // WHATWG normalization the request actually carries — e.g. for the `http`
+        // scheme it rewrites `\` to `/` and resolves `.`/`..` — so guarding on the
+        // raw event path could diverge from what the app receives (a `\` spelling
+        // would sail past a raw-path guard yet reach the hook route). Guarding on
+        // `app_url.path()` makes the guard structurally incapable of that
+        // divergence; `matches_hook_path` still layers percent-decode / case-fold /
+        // empty-segment collapse on top, for the spellings the app router (not
+        // `Url`) resolves.
+        let mut app_url = self.domain.clone();
+        app_url.set_path(path);
+
+        // The match is strict: it canonicalizes the outbound path (percent-decode,
+        // strip control bytes, collapse `//`/`.`/`..`, case-fold) so that every
+        // spelling the downstream app router would resolve to the hook route is
+        // blocked — not just the exact configured string. Only a path that stays
+        // undecidable (a malformed `%` escape, or non-UTF-8 once decoded) is treated
+        // as NOT the hook and passed through rather than 403'd; that cannot reach a
+        // hook route, because `hook_target` rejects any route containing a literal
+        // `%`. See `matches_hook_path`.
+        let outbound_path = app_url.path();
+        if matches_any_hook_path(
+            &[&self.hook_target_before_checkpoint, &self.hook_target_after_restore],
+            outbound_path,
+        ) {
+            tracing::warn!(path = %outbound_path, "rejecting external request to SnapStart hook path");
+            return Ok(Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(Empty::<Bytes>::new().map_err(Error::from).boxed())?);
         }
 
         let mut req_headers = parts.headers;
@@ -988,8 +1652,7 @@ impl Adapter<HttpConnector, Body> {
             }
         }
 
-        let mut app_url = self.domain.clone();
-        app_url.set_path(path);
+        // `app_url` was built (path set + hook guard) before the header work above.
         app_url.set_query(parts.uri.query().filter(|q| !q.is_empty()));
 
         tracing::debug!(app_url = %app_url, req_headers = ?req_headers, "sending request to app server");
@@ -1009,7 +1672,7 @@ impl Adapter<HttpConnector, Body> {
         };
         let request = builder.body(Body::Binary(body_bytes))?;
 
-        let mut app_response = self.client.request(request).await?;
+        let mut app_response = self.client().request(request).await?;
 
         // Check if status code should trigger an error
         if let Some(error_codes) = &self.error_status_codes {
@@ -1036,7 +1699,9 @@ impl Adapter<HttpConnector, Body> {
         tracing::debug!(status = %app_response.status(), body_size = ?app_response.body().size_hint().lower(),
             app_headers = ?app_response.headers().clone(), "responding to lambda event");
 
-        Ok(app_response)
+        // Box the body into a uniform type so synthetic responses (e.g. the 403
+        // hook-path guard) can share the return type with proxied responses.
+        Ok(app_response.map(|body| body.map_err(Error::from).boxed()))
     }
 }
 
@@ -1045,7 +1710,7 @@ impl Adapter<HttpConnector, Body> {
 /// This allows the adapter to be used directly with the Lambda runtime,
 /// which expects a `Service` that can handle Lambda events.
 impl Service<Request> for Adapter<HttpConnector, Body> {
-    type Response = Response<Incoming>;
+    type Response = Response<BoxBody<Bytes, Error>>;
     type Error = Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -1076,6 +1741,346 @@ mod tests {
         assert_eq!(parse_status_codes("invalid"), Vec::<u16>::new());
         assert_eq!(parse_status_codes("500-invalid"), Vec::<u16>::new());
         assert_eq!(parse_status_codes(""), Vec::<u16>::new());
+    }
+
+    // Both cases live in one test because they mutate the same process-global env
+    // vars; splitting them lets Rust's parallel test runner interleave the
+    // set/remove calls and clobber each other's state.
+    #[test]
+    fn test_snapstart_paths() {
+        // Default case: unset env vars -> both None.
+        std::env::remove_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH);
+        std::env::remove_var(ENV_SNAPSTART_AFTER_RESTORE_PATH);
+        let options = AdapterOptions::default();
+        assert_eq!(options.snapstart_before_checkpoint_path, None);
+        assert_eq!(options.snapstart_after_restore_path, None);
+
+        // Set case: env vars present -> parsed into Some(..).
+        std::env::set_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH, "/snapstart/before");
+        std::env::set_var(ENV_SNAPSTART_AFTER_RESTORE_PATH, "/snapstart/after");
+        let options = AdapterOptions::default();
+        assert_eq!(
+            options.snapstart_before_checkpoint_path.as_deref(),
+            Some("/snapstart/before")
+        );
+        assert_eq!(
+            options.snapstart_after_restore_path.as_deref(),
+            Some("/snapstart/after")
+        );
+
+        std::env::remove_var(ENV_SNAPSTART_BEFORE_CHECKPOINT_PATH);
+        std::env::remove_var(ENV_SNAPSTART_AFTER_RESTORE_PATH);
+    }
+
+    // All cases share one test because they mutate the same process-global env
+    // var; separate tests would let the parallel runner clobber each other.
+    #[test]
+    fn test_pool_idle_timeout() {
+        // Unset -> default 4s.
+        std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(4));
+        assert_eq!(AdapterOptions::default().pool_idle_timeout, Duration::from_secs(4));
+
+        // Explicit value -> parsed, and surfaced on AdapterOptions.
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "30");
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(30));
+        assert_eq!(AdapterOptions::default().pool_idle_timeout, Duration::from_secs(30));
+
+        // Zero is honored (disables idle keep-alive by timeout).
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "0");
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(0));
+
+        // Surrounding whitespace tolerated.
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "  15  ");
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(15));
+
+        // Fractional seconds are accepted, matching the sibling
+        // AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS. Previously `0.5` failed to parse
+        // as u64 and silently became the 4s default.
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "0.5");
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_millis(500));
+        std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "4.5");
+        assert_eq!(pool_idle_timeout_from_env(), Duration::from_millis(4500));
+
+        // Genuinely unusable values still fall back to the default (and now warn).
+        for bad in ["not-a-number", "30s", "-1", "NaN", "inf", "1e400"] {
+            std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, bad);
+            assert_eq!(
+                pool_idle_timeout_from_env(),
+                Duration::from_secs(4),
+                "{bad:?} must fall back to the default"
+            );
+        }
+
+        std::env::remove_var(ENV_POOL_IDLE_TIMEOUT_SECONDS);
+    }
+
+    /// Serves `n` sequential requests over `client` and returns how many TCP
+    /// connections the server had to accept. One connection means the idle pool
+    /// was reused (keep-alive honored); `n` means every request reconnected.
+    async fn connections_used(client: &Client<HttpConnector, Body>, n: usize) -> usize {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(|_req: hyper::Request<hyper::body::Incoming>| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(String::from("ok")))
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                        .await;
+                });
+            }
+        });
+
+        for _ in 0..n {
+            let req = hyper::Request::builder()
+                .uri(format!("http://{addr}/"))
+                .body(Body::Empty)
+                .unwrap();
+            let resp = client.request(req).await.unwrap();
+            // Drain the body so the connection is eligible to return to the pool.
+            let _ = resp.into_body().collect().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        accepted.load(Ordering::SeqCst)
+    }
+
+    /// `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` must actually take effect on the client
+    /// that serves invocations after a SnapStart restore.
+    ///
+    /// Regression for the bot finding: `build_client` used to apply
+    /// `pool_max_idle_per_host(0)` whenever `AWS_LAMBDA_INITIALIZATION_TYPE=snap-start`,
+    /// and that variable stays set for the whole lifetime of a restored environment.
+    /// Both call sites went through it, so the post-restore client — the one
+    /// `Adapter::client()` returns for every invocation after a restore — never
+    /// retained a connection, making the configured timeout a no-op on exactly the
+    /// functions this feature targets and reconnecting on every single invocation
+    /// (each one a fresh file descriptor, which Lambda limits).
+    ///
+    /// The snapshot hazard only applies to the client built BEFORE the snapshot; a
+    /// client built inside `after_restore` starts with an empty pool and cannot hold
+    /// a snapshotted connection, so it is safe for it to pool normally.
+    /// Touches no environment: `build_client` takes the policy explicitly, so this is
+    /// the exact call `SnapStartHooks::after_restore` makes and nothing about it
+    /// depends on process-global state.
+    #[tokio::test]
+    async fn test_pool_idle_timeout_applies_under_snapstart() {
+        let restored = build_client(Duration::from_secs(4), Pooling::Enabled);
+        let used = connections_used(&restored, 3).await;
+        assert_eq!(
+            used, 1,
+            "the post-restore client must honor the configured idle keep-alive and reuse \
+             its connection, but it opened {used} connections for 3 requests"
+        );
+    }
+
+    /// The Lambda Runtime API client must not retain an idle connection either.
+    ///
+    /// `register_extension_internal` built a default-pooled client. Under SnapStart any
+    /// connection it parks is captured in the snapshot and dead after restore — the
+    /// same hazard `lambda_runtime`'s own restore path handles by calling
+    /// `reset_pool()` on its RAPID client. Nothing re-establishes or resets this one,
+    /// and its failure path is `std::process::exit(1)`, so a reused dead connection
+    /// would terminate the restored environment. It also has nothing to gain from
+    /// pooling: it makes exactly two requests, `register` and then the long poll for
+    /// the first extension event.
+    #[tokio::test]
+    async fn test_runtime_api_client_does_not_retain_connections() {
+        let retained = connection_retained_after_request(&runtime_api_client()).await;
+        assert!(
+            !retained,
+            "the Runtime API client must drop its connection rather than park a socket \
+             that a snapshot would capture"
+        );
+    }
+
+    /// The pre-snapshot client must still never retain an idle connection, so nothing
+    /// dead can be captured in the snapshot and handed out after a restore
+    /// (hyper#3810). This also covers a consumer driving the `Service` impl directly,
+    /// who never triggers the after-restore rebuild.
+    ///
+    /// This counts reuse; `test_pre_snapshot_client_pool_is_disabled_not_merely_expiring`
+    /// pins the stronger, clock-independent property that the pool is off entirely.
+    /// Touches no environment — `Pooling::Disabled` is passed explicitly.
+    #[tokio::test]
+    async fn test_pre_snapshot_client_never_pools() {
+        let pre_snapshot = build_client(Duration::from_secs(4), Pooling::Disabled);
+        let used = connections_used(&pre_snapshot, 3).await;
+        assert_eq!(
+            used, 3,
+            "the pre-snapshot client must not retain an idle connection, but it reused one \
+             ({used} connections for 3 requests)"
+        );
+    }
+
+    /// Issues one request over `client`, then reports whether the connection is still
+    /// open afterwards (i.e. parked in hyper's idle pool).
+    ///
+    /// This distinguishes a *disabled* pool from a pool whose entries merely expire:
+    /// with `pool_max_idle_per_host(0)` the connection is dropped as soon as the
+    /// response completes, so the server side finishes; with
+    /// `pool_idle_timeout(Duration::ZERO)` the socket stays parked and is only
+    /// evicted at the next checkout. It observes the connection's lifetime rather
+    /// than elapsed time, so unlike a reuse count it cannot be satisfied by a clock
+    /// that happens to have advanced.
+    async fn connection_retained_after_request(client: &Client<HttpConnector, Body>) -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let closed = Arc::new(AtomicBool::new(false));
+        let flag = closed.clone();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let svc = hyper::service::service_fn(|_req: hyper::Request<hyper::body::Incoming>| async {
+                Ok::<_, std::convert::Infallible>(hyper::Response::new(String::from("ok")))
+            });
+            // Returns once the peer closes the connection.
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
+                .await;
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        let req = hyper::Request::builder()
+            .uri(format!("http://{addr}/"))
+            .body(Body::Empty)
+            .unwrap();
+        let resp = client.request(req).await.unwrap();
+        let _ = resp.into_body().collect().await.unwrap();
+        // Give the client a moment to either drop or park the connection.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        !closed.load(Ordering::SeqCst)
+    }
+
+    /// The pre-snapshot client must make reuse impossible *by construction*, not by
+    /// relying on the monotonic clock.
+    ///
+    /// Regression for the bot `[BUG]` finding: `pool_idle_timeout(Duration::ZERO)`
+    /// leaves hyper's pool enabled and parks the connection, deciding reuse at
+    /// checkout via `now.saturating_duration_since(idle_at) > timeout`. That
+    /// saturates to `ZERO` when the recorded instant is ahead of `now`, and
+    /// `ZERO > ZERO` is false — so the entry counts as fresh and is handed out. A
+    /// monotonic clock that did not advance across a restore is exactly the
+    /// condition hyper#3810 / rust-lang/rust#79462 describe, and exactly what the
+    /// original `pool_max_idle_per_host(0)` was written to distrust. Under `run()`
+    /// it is masked by the after-restore rebuild, but the direct-`Service` consumer
+    /// this restriction exists for is the one path where it can fail.
+    ///
+    /// `pool_max_idle_per_host(0)` disables the pool, so no clock is consulted.
+    /// Touches no environment — `Pooling::Disabled` is passed explicitly.
+    #[tokio::test]
+    async fn test_pre_snapshot_client_pool_is_disabled_not_merely_expiring() {
+        let pre_snapshot = build_client(Duration::from_secs(4), Pooling::Disabled);
+        let retained = connection_retained_after_request(&pre_snapshot).await;
+        assert!(
+            !retained,
+            "the pre-snapshot client must DROP its connection, not park it in the idle \
+             pool where a non-advancing clock could see it as fresh and reuse it"
+        );
+    }
+
+    /// The post-restore client, by contrast, must keep pooling: its pool starts empty
+    /// so it cannot hold a snapshotted connection, and retaining one is the whole
+    /// point of `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS`.
+    #[tokio::test]
+    async fn test_post_restore_client_retains_its_connection() {
+        // The call `SnapStartHooks::after_restore` makes.
+        let restored = build_client(Duration::from_secs(4), Pooling::Enabled);
+        let retained = connection_retained_after_request(&restored).await;
+        assert!(
+            retained,
+            "the post-restore client must keep its connection alive for reuse"
+        );
+    }
+
+    /// The env-var side of the pooling decision, and the only test here that touches
+    /// `AWS_LAMBDA_INITIALIZATION_TYPE`.
+    ///
+    /// All cases share one test because they mutate the same process-global variable
+    /// with opposite expectations — as separate tests under plain `cargo test` they
+    /// could interleave and invert each other's assertions, and these are the
+    /// assertions guarding the snapshot-connection hazard. The connection-level
+    /// behavior for each policy is covered env-free by
+    /// `test_pre_snapshot_client_never_pools`,
+    /// `test_pre_snapshot_client_pool_is_disabled_not_merely_expiring` and
+    /// `test_post_restore_client_retains_its_connection`, so all this needs to pin is
+    /// which policy the environment selects, plus that `Adapter::new` wires it through
+    /// and keeps the configured timeout for the after-restore rebuild.
+    #[tokio::test]
+    async fn test_base_client_pooling_from_env() {
+        let options = AdapterOptions {
+            pool_idle_timeout: Duration::from_secs(4),
+            ..Default::default()
+        };
+
+        // Under SnapStart: pool off, and the configured value is still carried through.
+        std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", "snap-start");
+        assert_eq!(base_client_pooling(), Pooling::Disabled);
+        let adapter = Adapter::new(&options).unwrap();
+        assert_eq!(adapter.pool_idle_timeout, Duration::from_secs(4));
+        assert!(
+            !connection_retained_after_request(&adapter.client).await,
+            "Adapter::new must wire Pooling::Disabled through under SnapStart"
+        );
+
+        // Every other initialization type, and unset: normal keep-alive. The safety
+        // mechanism must not cost other deployments their pooling.
+        for other in ["on-demand", "provisioned-concurrency"] {
+            std::env::set_var("AWS_LAMBDA_INITIALIZATION_TYPE", other);
+            assert_eq!(base_client_pooling(), Pooling::Enabled, "init type {other:?}");
+        }
+        std::env::remove_var("AWS_LAMBDA_INITIALIZATION_TYPE");
+        assert_eq!(base_client_pooling(), Pooling::Enabled);
+        let adapter = Adapter::new(&options).unwrap();
+        let used = connections_used(&adapter.client, 3).await;
+        assert_eq!(used, 1, "keep-alive must be honored without SnapStart, got {used}");
+    }
+
+    // All cases share one test because they mutate the same process-global env
+    // var; separate tests would let the parallel runner clobber each other.
+    #[test]
+    fn test_readiness_check_timeout() {
+        // Unset -> None (unbounded), surfaced on AdapterOptions.
+        std::env::remove_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS);
+        assert_eq!(readiness_check_timeout_from_env(), None);
+        assert_eq!(AdapterOptions::default().readiness_check_timeout, None);
+
+        // Explicit value -> Some(secs), parsed and surfaced.
+        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "45");
+        assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_secs(45)));
+        assert_eq!(
+            AdapterOptions::default().readiness_check_timeout,
+            Some(Duration::from_secs(45))
+        );
+
+        // Fractional seconds are accepted.
+        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "0.5");
+        assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_millis(500)));
+
+        // Surrounding whitespace tolerated.
+        std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, "  20  ");
+        assert_eq!(readiness_check_timeout_from_env(), Some(Duration::from_secs(20)));
+
+        // Unparseable / non-finite / negative -> None (unbounded), never a panic.
+        for bad in ["nope", "-1", "NaN", "inf", "0", "0.0", "1e300", "99999999999999999999"] {
+            std::env::set_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS, bad);
+            assert_eq!(
+                readiness_check_timeout_from_env(),
+                None,
+                "value {bad:?} should be rejected"
+            );
+        }
+
+        std::env::remove_var(ENV_READINESS_CHECK_TIMEOUT_SECONDS);
     }
 
     #[tokio::test]
@@ -1140,6 +2145,36 @@ mod tests {
 
         // Assert app server's healthcheck endpoint got called
         healthcheck.assert();
+    }
+
+    #[tokio::test]
+    async fn test_check_init_health_fails_when_sync_init_readiness_timeout_expires() {
+        // App server that never reports ready (always 500) so the readiness
+        // retry loop runs until the configured timeout fires.
+        let app_server = MockServer::start();
+        app_server.mock(|when, then| {
+            when.method(GET).path("/healthcheck");
+            then.status(500).body("nope");
+        });
+
+        // Sync init (async_init defaults to false) with a short configured bound.
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/healthcheck".to_string(),
+            readiness_check_timeout: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+
+        let mut adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // Refuse to serve: a configured timeout that expires fails initialization.
+        let result = adapter.check_init_health().await;
+        assert!(
+            result.is_err(),
+            "sync-init readiness timeout should fail init, got {result:?}"
+        );
     }
 
     #[tokio::test]
@@ -1403,6 +2438,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_external_request_to_hook_path_is_forbidden() {
+        // App server should NOT be called for a guarded path.
+        let app_server = MockServer::start();
+        let guarded = app_server.mock(|when, then| {
+            when.path("/snapstart/after");
+            then.status(200).body("should not be called");
+        });
+
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/".to_string(),
+            snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // External request (ALB) targeting the guarded hook path.
+        let alb_req = lambda_http::request::LambdaRequest::Alb({
+            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
+            req.http_method = Method::POST;
+            req.path = Some("/snapstart/after".into());
+            req
+        });
+        let mut request = Request::from(alb_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+
+        let response = adapter
+            .fetch_response(request)
+            .await
+            .expect("guard returns Ok response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // The inner app must not have been contacted.
+        guarded.assert_calls(0);
+    }
+
+    #[tokio::test]
+    async fn test_non_hook_path_is_proxied_normally() {
+        let app_server = MockServer::start();
+        let hello = app_server.mock(|when, then| {
+            when.path("/hello");
+            then.status(200).body("OK");
+        });
+
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/".to_string(),
+            snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        let alb_req = lambda_http::request::LambdaRequest::Alb({
+            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
+            req.http_method = Method::GET;
+            req.path = Some("/hello".into());
+            req
+        });
+        let mut request = Request::from(alb_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+
+        let response = adapter.fetch_response(request).await.expect("Request failed");
+        assert_eq!(response.status(), StatusCode::OK);
+        hello.assert();
+    }
+
+    #[tokio::test]
     async fn test_tenant_id_header_absent_when_no_tenant() {
         let app_server = MockServer::start();
         app_server.mock(|when, then| {
@@ -1556,5 +2662,591 @@ mod tests {
             .await
             .expect("Request failed despite control bytes in request context path");
         assert_eq!(200, response.status().as_u16());
+    }
+
+    #[tokio::test]
+    async fn test_client_helper_returns_restored_when_set() {
+        let options = AdapterOptions {
+            host: "127.0.0.1".to_string(),
+            port: "8080".to_string(),
+            readiness_check_port: "8080".to_string(),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        // Before restore: client() returns the base client.
+        let base_ptr = Arc::as_ptr(adapter.client()) as *const ();
+
+        // Publish a fresh client.
+        let fresh = Arc::new(build_client(Duration::from_secs(4), Pooling::Enabled));
+        let fresh_ptr = Arc::as_ptr(&fresh) as *const ();
+        assert!(adapter.restored_client.set(fresh).is_ok(), "set should succeed once");
+
+        // After restore: client() returns the restored client (different pointer).
+        let now_ptr = Arc::as_ptr(adapter.client()) as *const ();
+        assert_ne!(now_ptr, base_ptr);
+        assert_eq!(now_ptr, fresh_ptr);
+    }
+
+    // ---------------------------------------------------------------------
+    // SnapStart hook-path guard: configured side fails closed (rejected at
+    // startup), request side fails open (undecidable paths are forwarded).
+    // ---------------------------------------------------------------------
+
+    /// Build an ALB request for an arbitrary method + raw path.
+    fn alb_request(method: Method, raw_path: &str) -> Request {
+        let alb_req = lambda_http::request::LambdaRequest::Alb({
+            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
+            req.http_method = method;
+            req.path = Some(raw_path.into());
+            req
+        });
+        let mut request = Request::from(alb_req);
+        request.extensions_mut().insert(make_lambda_context(None));
+        request
+    }
+
+    /// The guard must block the ENTIRE equivalence class of spellings that the
+    /// downstream app router would resolve to the configured hook route — not just
+    /// the exact configured string. Each of these must yield 403 and never reach
+    /// the app.
+    #[tokio::test]
+    async fn test_hook_guard_blocks_equivalence_class() {
+        let blocked = [
+            "/snapstart/after",                // canonical
+            "snapstart/after",                 // missing leading slash (set_path still routes it)
+            "/snapstart/after/",               // trailing slash
+            "//snapstart//after",              // duplicate empty segments
+            "/snapstart/./after",              // dot segment
+            "/foo/../snapstart/after",         // parent segment resolves onto the hook
+            "/snapstart/%61fter",              // percent-encoded 'a'
+            "/SnapStart/After",                // case variance
+            "/snapstart/%2fafter",             // encoded slash decodes to '/' -> matches hook route
+            "/snapstart\\after",               // backslash: Url::set_path normalizes it to '/'
+            "/snapstart/after;x=1",            // matrix param: stripped by Spring MVC / servlet routing
+            "/snapstart/after;jsessionid=abc", // servlet session param variant
+            "/snapstart;a=b/after",            // matrix param on a non-terminal segment
+            "/snapstart/after%0A",             // trailing LF: Starlette `$` matches before `\n`
+            "/snapstart/after%0a",             // lowercase-encoded LF
+            "/snapstart/after%0d%0a",          // trailing CRLF
+            "/snapstart/after%00",             // trailing NUL
+        ];
+
+        for raw in blocked {
+            let app_server = MockServer::start();
+            // Match ANY path; if the guard fails open, this proves the app was hit.
+            let hook = app_server.mock(|when, then| {
+                when.any_request();
+                then.status(200).body("should not be reached for guarded paths");
+            });
+            let options = AdapterOptions {
+                host: app_server.host(),
+                port: app_server.port().to_string(),
+                readiness_check_port: app_server.port().to_string(),
+                readiness_check_path: "/".to_string(),
+                snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+                ..Default::default()
+            };
+            let adapter = Adapter::new(&options).expect("Failed to create adapter");
+            let response = adapter
+                .fetch_response(alb_request(Method::POST, raw))
+                .await
+                .expect("guard returns Ok response");
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "path {raw:?} must be blocked (403) by the strict guard"
+            );
+            hook.assert_calls(0);
+        }
+    }
+
+    /// The guard must NOT collapse into "block everything": a genuinely distinct
+    /// route that merely shares a prefix with the hook path is proxied normally.
+    #[tokio::test]
+    async fn test_hook_guard_allows_distinct_route() {
+        let allowed = ["/snapstart/after-report", "/snapstart", "/snapstart/afterx", "/hello"];
+        for raw in allowed {
+            let app_server = MockServer::start();
+            let route = app_server.mock(|when, then| {
+                when.path(raw);
+                then.status(200).body("OK");
+            });
+            let options = AdapterOptions {
+                host: app_server.host(),
+                port: app_server.port().to_string(),
+                readiness_check_port: app_server.port().to_string(),
+                readiness_check_path: "/".to_string(),
+                snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+                ..Default::default()
+            };
+            let adapter = Adapter::new(&options).expect("Failed to create adapter");
+            let response = adapter
+                .fetch_response(alb_request(Method::GET, raw))
+                .await
+                .expect("request failed");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "distinct route {raw:?} must NOT be blocked"
+            );
+            route.assert();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Base-path strip: single occurrence, segment-aware
+    // ---------------------------------------------------------------------
+
+    /// `/api/api/order` with base_path `/api` must strip exactly ONE occurrence
+    /// (-> `/api/order`), and a partial-segment prefix like `/apiorder` must not be
+    /// stripped at all.
+    #[tokio::test]
+    async fn test_base_path_strip_single_and_segment_aware() {
+        // (base_path, request_path, path the app should receive)
+        let cases = [
+            ("/api", "/api/api/order", "/api/order"),  // strip once, not repeatedly
+            ("/api", "/apiorder", "/apiorder"),        // partial segment: not stripped
+            ("/api", "/api/order", "/order"),          // normal single strip
+            ("/api", "/api", "/"),                     // exact base path -> root
+            ("/api", "/other", "/other"),              // no prefix: untouched
+            ("/api/", "/api/order", "/order"),         // trailing slash: normalized, still strips
+            ("/api/", "/api/api/order", "/api/order"), // trailing slash + repeated segment
+            ("/api/", "/api", "/"),                    // trailing slash, exact -> root
+        ];
+
+        for (base, req_path, expected) in cases {
+            let app_server = MockServer::start();
+            let route = app_server.mock(|when, then| {
+                when.path(expected);
+                then.status(200).body("OK");
+            });
+            let options = AdapterOptions {
+                host: app_server.host(),
+                port: app_server.port().to_string(),
+                readiness_check_port: app_server.port().to_string(),
+                readiness_check_path: "/".to_string(),
+                base_path: Some(base.to_string()),
+                ..Default::default()
+            };
+            let adapter = Adapter::new(&options).expect("Failed to create adapter");
+            let response = adapter
+                .fetch_response(alb_request(Method::GET, req_path))
+                .await
+                .unwrap_or_else(|e| panic!("request for base={base} path={req_path} failed: {e}"));
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "base={base} req={req_path} should proxy to {expected}"
+            );
+            route.assert();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Canonicalization helper unit tests (pin the contract directly)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn test_percent_decode_once() {
+        assert_eq!(
+            percent_decode_once("/snapstart/%61fter").as_deref(),
+            Some("/snapstart/after")
+        );
+        assert_eq!(percent_decode_once("/a%2fb").as_deref(), Some("/a/b")); // %2f -> '/'
+        assert_eq!(percent_decode_once("plain").as_deref(), Some("plain"));
+        // Malformed escapes -> None.
+        assert_eq!(percent_decode_once("/a%"), None);
+        assert_eq!(percent_decode_once("/a%2"), None);
+        assert_eq!(percent_decode_once("/a%zz"), None);
+    }
+
+    #[test]
+    fn test_canonicalize_hook_path_equivalence() {
+        let want = canonicalize_hook_path("/snapstart/after").unwrap();
+        for spelling in [
+            "snapstart/after",
+            "/snapstart/after/",
+            "//snapstart//after",
+            "/snapstart/./after",
+            "/foo/../snapstart/after",
+            "/snapstart/%61fter",
+            "/SnapStart/After",
+            "/snapstart/%2fafter", // encoded slash decodes to a real slash
+        ] {
+            assert_eq!(
+                canonicalize_hook_path(spelling).as_ref(),
+                Some(&want),
+                "{spelling:?} should canonicalize onto the hook route"
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_hook_path_distinct_and_ambiguous() {
+        let hook = canonicalize_hook_path("/snapstart/after").unwrap();
+        // Distinct routes must NOT canonicalize onto the hook.
+        for distinct in [
+            "/snapstart/after-report",
+            "/snapstart",
+            "/snapstart/afterx",
+            "/hello",
+            "/foo/%2fbar",
+            // Single-pass decode: `%2561` decodes ONCE to the literal `%61fter`,
+            // which the app router does NOT resolve to `/snapstart/after`.
+            "/snapstart/%2561fter",
+        ] {
+            assert_ne!(canonicalize_hook_path(distinct).as_ref(), Some(&hook), "{distinct:?}");
+        }
+        // A validly single-encoded literal percent (`%25` -> `%`) is DECIDABLE and
+        // must not fall into the undecidable branch (regression: decode-until-stable
+        // used to 403 `/reports/100%25`). It canonicalizes to a concrete route.
+        assert_eq!(
+            canonicalize_hook_path("/reports/100%25"),
+            Some(vec!["reports".to_string(), "100%".to_string()]),
+        );
+        // A malformed `%` escape is undecidable -> None (request side passes through).
+        assert_eq!(canonicalize_hook_path("/snapstart/%2"), None);
+        // A control byte is NOT undecidable: it is stripped and canonicalization
+        // continues, so `/snapstart/af\u{0}ter` collapses onto the hook route and
+        // will be blocked (a router like Starlette resolves it to `/snapstart/after`).
+        assert_eq!(
+            canonicalize_hook_path("/snapstart/af\u{0}ter"),
+            Some(vec!["snapstart".to_string(), "after".to_string()]),
+        );
+    }
+
+    /// Test helper mirroring the real guard: the configured path is canonicalized
+    /// by [`hook_target`] (through `set_path`), and the request path is passed
+    /// through the same `set_path` normalization the request side uses in
+    /// `fetch_response` (`app_url.path()`). Both sides therefore share the identical
+    /// transformation, exactly as in production.
+    ///
+    /// Panics on a configured path `hook_target` rejects; that path never reaches
+    /// the guard in production either, because `Adapter::new` fails first (see
+    /// `test_non_canonicalizable_configured_hook_path_is_rejected`).
+    fn guard_blocks(configured: &str, request: &str) -> bool {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        let want =
+            hook_target(&domain, &Some(configured.to_string())).expect("configured hook path must be canonicalizable");
+        let mut u = domain.clone();
+        u.set_path(request);
+        matches_hook_path(&want, u.path())
+    }
+
+    /// Regression for the single-pass fix: with a hook that shares a first
+    /// segment, a validly single-encoded request under that segment must NOT be
+    /// blocked (bot finding: `/reports/100%25` vs hook `/reports/snapshot`).
+    #[test]
+    fn test_matches_hook_path_valid_encoded_percent_not_blocked() {
+        assert!(
+            !guard_blocks("/reports/snapshot", "/reports/100%25"),
+            "/reports/100%25 must not 403"
+        );
+        // The genuine single-encoded hook spelling is still blocked.
+        assert!(guard_blocks("/reports/snapshot", "/reports/%73napshot"));
+    }
+
+    /// The configured side must be normalized through `set_path` too, so a
+    /// configured value that `set_path` rewrites still guards the route the app
+    /// actually serves (bot SECURITY finding: `/snapstart\after`).
+    #[test]
+    fn test_matches_hook_path_configured_side_normalized_through_set_path() {
+        // Configured with a backslash: set_path rewrites it to `/snapstart/after`,
+        // which is the route the app serves — so requests to it must be blocked.
+        assert!(guard_blocks("/snapstart\\after", "/snapstart/after"));
+        assert!(guard_blocks("/snapstart\\after", "/snapstart\\after"));
+        assert!(guard_blocks("/snapstart\\after", "/SnapStart/After/"));
+        // A genuinely different route is still allowed.
+        assert!(!guard_blocks("/snapstart\\after", "/snapstart/other"));
+
+        // Dot segments / duplicate slashes in the configured value are resolved by
+        // set_path + canonicalize, so the effective route is still guarded.
+        assert!(guard_blocks("/a/../snapstart//after", "/snapstart/after"));
+    }
+
+    #[test]
+    fn test_matches_hook_path_undecidable_passes_through() {
+        assert!(guard_blocks("/snapstart/after", "/SnapStart/After/"));
+        assert!(!guard_blocks("/snapstart/after", "/snapstart/after-report"));
+        assert!(!matches_hook_path(&None, "/snapstart/after")); // no hook configured
+        assert!(!matches_hook_path(&None, "/snapstart/%2")); // ...and none => never match
+
+        // A malformed `%` escape is undecidable — the app router cannot decode it
+        // to the hook route either — so it is NOT the hook and passes through, even
+        // when it shares the hook's leading segment.
+        assert!(!guard_blocks("/snapstart/after", "/snapstart/%2"));
+        assert!(!guard_blocks("/snapstart/after", "/snapstart/%")); // trailing bare %
+
+        // A control byte is DIFFERENT: a router can still resolve the surrounding
+        // path to the hook (Python's `$` matches before a trailing `\n`), so the
+        // guard strips control bytes and BLOCKS the request rather than passing it
+        // through. `af\u{0}ter` canonicalizes to the `after` segment.
+        assert!(guard_blocks("/snapstart/after", "/snapstart/af\u{0}ter"));
+
+        // Unrelated undecidable routes are likewise not blocked (bot findings:
+        // /reports/100% under a shared-prefix hook, /100%, /other/%2).
+        assert!(!guard_blocks("/snapstart/after", "/reports/100%"));
+        assert!(!guard_blocks("/snapstart/after", "/other/%2"));
+        assert!(!guard_blocks("/snapstart/after", "/100%"));
+        assert!(!guard_blocks("/snapstart/after", "/%2"));
+        // The exact bot-reported case: hook shares the first segment.
+        assert!(!guard_blocks("/reports/snapshot", "/reports/100%"));
+    }
+
+    /// An empty configured hook path must mean "no hook" on BOTH sides: the guard
+    /// target and the path the hook actually POSTs to.
+    ///
+    /// Regression: `hook_target` short-circuits on `configured.is_empty()` and
+    /// returns `Ok(None)` ("no hook"), but `Adapter::new` used to store the raw
+    /// `Some("")`, which `run()` hands to `SnapStartHooks`. `before_snapshot` /
+    /// `after_restore` then take their `if let Some(path)` branch and call
+    /// `post_hook(.., "")` — and `Url::set_path("")` yields `/`, so the adapter
+    /// POSTed to the unguarded application root on every lifecycle event (a 405 on
+    /// both FastAPI examples, which `post_hook` treats as fatal). That is the same
+    /// guard-versus-POST divergence the root-collapse rejection closed; `""` slipped
+    /// past it by returning before canonicalization. Normalizing to `None` here
+    /// keeps the documented "empty means unset" semantics while making the two
+    /// sides agree by construction.
+    #[test]
+    fn test_empty_hook_path_is_normalized_on_both_sides() {
+        let options = AdapterOptions {
+            snapstart_before_checkpoint_path: Some(String::new()),
+            snapstart_after_restore_path: Some(String::new()),
+            ..Default::default()
+        };
+        let adapter = Adapter::new(&options).expect("empty hook paths mean 'no hook', not an error");
+        assert_eq!(
+            adapter.snapstart_before_checkpoint_path, None,
+            "an empty before-checkpoint path must not leave a hook that POSTs to /"
+        );
+        assert_eq!(
+            adapter.snapstart_after_restore_path, None,
+            "an empty after-restore path must not leave a hook that POSTs to /"
+        );
+        // The guard side already agreed; assert both halves together so they cannot
+        // drift apart again.
+        assert_eq!(adapter.hook_target_before_checkpoint, None);
+        assert_eq!(adapter.hook_target_after_restore, None);
+    }
+
+    /// A configured hook path that cannot be canonicalized must be REJECTED, not
+    /// degraded to a raw string compare.
+    ///
+    /// Regression for the bot SECURITY finding: the old `HookTarget::Raw` fallback
+    /// compared raw strings on both sides, so a configured `/snapstart/after%`
+    /// (bare `%`, undecidable) left every encoded spelling of that same route
+    /// unguarded — verified against uvicorn/Starlette, which serves the route as
+    /// `/snapstart/after%` and resolves a request for `/snapstart/after%25` onto it.
+    /// A non-canonicalizable hook path is always a misconfiguration, so fail init
+    /// rather than ship a guard that reads as protective but is not.
+    #[test]
+    fn test_non_canonicalizable_configured_hook_path_is_rejected() {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        for cfg in ["/snapstart/after%", "/snapstart/%2", "/snapstart/%zz"] {
+            assert!(
+                hook_target(&domain, &Some(cfg.to_string())).is_err(),
+                "configured hook path {cfg:?} must be rejected, not silently degraded"
+            );
+        }
+        // A canonicalizable path is still accepted.
+        assert_eq!(
+            hook_target(&domain, &Some("/snapstart/after".to_string())).unwrap(),
+            Some(vec!["snapstart".to_string(), "after".to_string()])
+        );
+    }
+
+    /// A configured hook path whose canonical form contains a literal `%` must also
+    /// be rejected — this is what makes the request-side pass-through provably safe.
+    ///
+    /// Rejecting only *non-canonicalizable* configs is not enough: configuring the
+    /// same route the "correct" way (`/snapstart/after%25`, canonical `after%`) left
+    /// the bare-`%` spelling reachable, because an undecidable request path passes
+    /// through the guard while uvicorn/Starlette still resolves it onto the route
+    /// (verified end-to-end: `POST /snapstart/after%` -> 200, handler ran).
+    ///
+    /// With no `%` in any hook route, the pass-through cannot be exploited on ANY
+    /// framework, without the adapter modelling per-framework decoding: an
+    /// undecidable request path either is rejected by the router outright (Node
+    /// throws `URIError` -> Express 400; Go and Spring likewise 400), or is decoded
+    /// leniently into a path containing a literal `%` or U+FFFD (Python's
+    /// `unquote`) — and neither can equal a `%`-free hook route.
+    #[test]
+    fn test_configured_hook_path_with_literal_percent_is_rejected() {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        for cfg in ["/snapstart/after%25", "/reports/100%25", "/%25/after"] {
+            assert!(
+                hook_target(&domain, &Some(cfg.to_string())).is_err(),
+                "configured hook path {cfg:?} canonicalizes to a route containing `%` \
+                 and must be rejected"
+            );
+        }
+        // Sanity: a `%`-free route is unaffected, and a request carrying a literal
+        // percent under an unrelated route still must NOT be blocked.
+        assert!(hook_target(&domain, &Some("/snapstart/after".to_string())).is_ok());
+        assert!(!guard_blocks("/reports/snapshot", "/reports/100%25"));
+        assert!(!guard_blocks("/reports/snapshot", "/reports/100%"));
+    }
+
+    /// `Adapter::new` must surface that rejection, so a misconfigured function
+    /// fails initialization with a clear error instead of starting with a
+    /// weakened guard on a state-mutating route.
+    #[test]
+    fn test_adapter_new_fails_on_non_canonicalizable_hook_path() {
+        let options = AdapterOptions {
+            snapstart_after_restore_path: Some("/snapstart/after%".to_string()),
+            ..Default::default()
+        };
+        let err = Adapter::new(&options)
+            .err()
+            .expect("Adapter::new must reject a non-canonicalizable hook path");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/snapstart/after%"),
+            "error must name the offending path, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_matches_hook_path_empty_config_never_matches() {
+        // An unset or empty configured hook path means "no hook": it must never 403
+        // the app root (bot finding: AWS_LWA_..._PATH="" blocks "/").
+        assert!(!guard_blocks("", "/"), "empty config must not block /");
+        assert!(!guard_blocks("", "/anything"), "empty config must not block /anything");
+        assert!(!matches_hook_path(&None, "/"));
+    }
+
+    /// A configured hook path that collapses to the app root must be REJECTED.
+    ///
+    /// Regression for the bot `[BUG]` finding: `hook_target` returned `Ok(None)`
+    /// for these, silently disabling the guard, while `SnapStartHooks::after_restore`
+    /// still POSTs to the raw configured path (it reads `after_restore_path`, not the
+    /// guard target). The two therefore diverged with no diagnostic: with
+    /// `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/..` the adapter POSTs to `/` on every
+    /// restore, which is a 405 on both FastAPI examples (they declare only
+    /// `@app.get("/")`), and `post_hook` treats any non-2xx as fatal — so every
+    /// restore failed with nothing explaining why.
+    ///
+    /// Rejecting is the consistent resolution: the guard cannot protect the app root
+    /// without 403-ing all normal traffic, and the docs require a hook path "your
+    /// normal application traffic does not use" — which the root never is. Same rule
+    /// as the `%` cases: if the adapter cannot guard it, it refuses to run with it.
+    #[test]
+    fn test_root_collapsing_configured_hook_path_is_rejected() {
+        let domain: Url = "http://127.0.0.1:8080".parse().unwrap();
+        for cfg in ["/", "//", "///", "/..", "/.", "/foo/..", "/%2f", "/a/../..", "/./"] {
+            assert!(
+                hook_target(&domain, &Some(cfg.to_string())).is_err(),
+                "configured hook path {cfg:?} collapses to the app root and must be rejected"
+            );
+        }
+        // Unset and empty remain "no hook", not an error.
+        assert!(hook_target(&domain, &None).unwrap().is_none());
+        assert!(hook_target(&domain, &Some(String::new())).unwrap().is_none());
+        // A real route is still accepted.
+        assert!(hook_target(&domain, &Some("/snapstart/after".to_string())).is_ok());
+    }
+
+    /// `Adapter::new` must surface the root-collapse rejection, so the operator gets
+    /// one clear error at init instead of a 405-driven restore failure every restore.
+    #[test]
+    fn test_adapter_new_fails_on_root_collapsing_hook_path() {
+        let options = AdapterOptions {
+            snapstart_after_restore_path: Some("/..".to_string()),
+            ..Default::default()
+        };
+        let err = Adapter::new(&options)
+            .err()
+            .expect("Adapter::new must reject a hook path that collapses to the root");
+        let msg = err.to_string();
+        assert!(msg.contains("/.."), "error must name the offending path, got: {msg}");
+    }
+
+    /// A hook path that collides with `AWS_LWA_PASS_THROUGH_PATH` must be rejected at
+    /// init, because the pass-through rewrite happens BEFORE the guard.
+    ///
+    /// Regression for the bot finding: `fetch_response` rewrites `path` to
+    /// `pass_through_path` for a `RequestContext::PassThrough` POST, and only then
+    /// runs the guard on the rewritten path. So configuring the hook at `/events`
+    /// (the default pass-through path) makes EVERY non-HTTP trigger event canonicalize
+    /// onto the guarded route and get a 403 instead of reaching the app — silently,
+    /// with only a per-invocation `warn!`. Init-time validation already exists for the
+    /// other unguardable hook paths, so this belongs there too.
+    #[test]
+    fn test_adapter_new_fails_when_hook_path_collides_with_pass_through_path() {
+        // The default pass-through path is `/events`.
+        for hook in ["/events", "/Events", "/events/", "/./events", "/%65vents"] {
+            let options = AdapterOptions {
+                snapstart_after_restore_path: Some(hook.to_string()),
+                ..Default::default()
+            };
+            let err = Adapter::new(&options).err().unwrap_or_else(|| {
+                panic!("hook path {hook:?} collides with the pass-through path and must be rejected")
+            });
+            let msg = err.to_string();
+            assert!(
+                msg.contains("pass-through") || msg.contains("AWS_LWA_PASS_THROUGH_PATH"),
+                "error should explain the pass-through collision, got: {msg}"
+            );
+        }
+
+        // A custom pass-through path moves the collision with it.
+        let options = AdapterOptions {
+            pass_through_path: "/queue".to_string(),
+            snapstart_after_restore_path: Some("/events".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            Adapter::new(&options).is_ok(),
+            "/events must be fine once the pass-through path is elsewhere"
+        );
+        let options = AdapterOptions {
+            pass_through_path: "/queue".to_string(),
+            snapstart_after_restore_path: Some("/queue".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            Adapter::new(&options).is_err(),
+            "the collision follows the configured value"
+        );
+    }
+
+    /// The pass-through collision check must not fail init on an unguardable
+    /// `AWS_LWA_PASS_THROUGH_PATH`, which is unrelated configuration.
+    ///
+    /// Regression for the bot `[BUG]` finding on de0ea31: the check ran
+    /// `hook_target(&domain, &Some(pass_through_path))?`, so a pass-through path that
+    /// `hook_target` rejects — `/` collapses to the root, and `AWS_LWA_PASS_THROUGH_PATH`
+    /// is read straight from the environment with no prior validation — aborted
+    /// `Adapter::new` with a SnapStart-flavored error, even with no hook configured and
+    /// therefore no guard and nothing to collide with.
+    ///
+    /// Such a path cannot collide: hook targets are canonicalizable and non-empty by
+    /// construction, so a request rewritten onto a root-collapsing, `%`-bearing, or
+    /// non-canonicalizable pass-through path can never canonicalize onto one.
+    #[test]
+    fn test_unguardable_pass_through_path_does_not_fail_init() {
+        for pass_through in ["/", "//", "/..", "/reports/100%25", "/bad/%2"] {
+            // No hook configured: nothing to validate against at all.
+            let options = AdapterOptions {
+                pass_through_path: pass_through.to_string(),
+                ..Default::default()
+            };
+            assert!(
+                Adapter::new(&options).is_ok(),
+                "pass-through path {pass_through:?} must not fail init when no hook is configured"
+            );
+
+            // Hook configured: still no collision possible with such a path.
+            let options = AdapterOptions {
+                pass_through_path: pass_through.to_string(),
+                snapstart_after_restore_path: Some("/snapstart/after".to_string()),
+                ..Default::default()
+            };
+            assert!(
+                Adapter::new(&options).is_ok(),
+                "pass-through path {pass_through:?} cannot collide with a canonical hook route"
+            );
+        }
     }
 }

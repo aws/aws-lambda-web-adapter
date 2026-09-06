@@ -15,6 +15,7 @@ The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local 
 - Supports Amazon API Gateway Rest API and Http API endpoints, Lambda Function URLs, and Application Load Balancer
 - Supports Lambda managed runtimes, custom runtimes and docker OCI images
 - Supports Lambda Managed Instances for multi-concurrent request handling
+- Supports Lambda SnapStart with before-checkpoint and after-restore hooks
 - Supports any web frameworks and languages, no new code dependency to include
 - Automatic encode binary response
 - Enables graceful shutdown
@@ -59,13 +60,17 @@ The readiness check port/path and traffic port can be configured using environme
 | AWS_LWA_READINESS_CHECK_PROTOCOL        | readiness check protocol: "http" or "tcp"                                       | "http"       |
 | AWS_LWA_READINESS_CHECK_HEALTHY_STATUS  | HTTP status codes considered healthy (e.g., "200-399")                          | "100-499"    |
 | AWS_LWA_ASYNC_INIT                      | enable asynchronous initialization for long initialization functions             | "false"      |
-| AWS_LWA_REMOVE_BASE_PATH               | the base path to be removed from request path                                   | None         |
+| AWS_LWA_REMOVE_BASE_PATH               | base path to remove from the request path; strips exactly one leading occurrence on a segment boundary (with `/api`: `/api/api/order`->`/api/order`, `/apiorder` unchanged; trailing slash normalized) | None         |
 | AWS_LWA_ENABLE_COMPRESSION             | enable gzip/br compression for response body (buffered mode only)               | "false"      |
 | AWS_LWA_INVOKE_MODE                    | Lambda function invoke mode: "buffered" or "response_stream"                    | "buffered"   |
 | AWS_LWA_PASS_THROUGH_PATH             | the path for receiving event payloads from non-http triggers                    | "/events"    |
 | AWS_LWA_AUTHORIZATION_SOURCE          | a header name to be replaced to `Authorization`                                 | None         |
 | AWS_LWA_ERROR_STATUS_CODES            | HTTP status codes that will cause Lambda invocations to fail (e.g. "500,502-504") | None       |
 | AWS_LWA_LAMBDA_RUNTIME_API_PROXY      | overwrites `AWS_LAMBDA_RUNTIME_API` to allow proxying request                   | None         |
+| AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH | inner-app path the adapter POSTs to before a SnapStart snapshot (drain resources) | None         |
+| AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH     | inner-app path the adapter POSTs to after a SnapStart restore (reconnect/reseed)  | None         |
+| AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS        | idle keep-alive (seconds) for the adapter's connection to your app                | "4"          |
+| AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS  | seconds (fractional allowed, e.g. 0.5) to wait for the app to report ready (cold-start init and after a SnapStart restore); on expiry the adapter FAILS (init fails and the runtime never starts; a restore fails) rather than serving. Unset, 0, or negative all mean wait indefinitely (a set-but-<=0 or malformed value is ignored with a warning). async_init keeps its own ~9.8s bound | unset / <=0 (unbounded) |
 
 > **Deprecation Notice:** The following non-namespaced environment variables are deprecated and will be removed in version 2.0:
 > `HOST`, `READINESS_CHECK_PORT`, `READINESS_CHECK_PATH`, `READINESS_CHECK_PROTOCOL`, `REMOVE_BASE_PATH`, `ASYNC_INIT`.
@@ -74,6 +79,45 @@ The readiness check port/path and traffic port can be configured using environme
 > Additionally, `AWS_LWA_READINESS_CHECK_MIN_UNHEALTHY_STATUS` has been removed in 1.0. Use `AWS_LWA_READINESS_CHECK_HEALTHY_STATUS` instead.
 
 👉 [Detailed configuration docs](https://aws.github.io/aws-lambda-web-adapter/configuration/environment-variables.html)
+
+### SnapStart support
+
+When your function uses [Lambda SnapStart](https://docs.aws.amazon.com/lambda/latest/dg/snapstart.html),
+the adapter can notify your web application at the snapshot boundary so it can
+drain and re-establish state (database connections, cached DNS, PRNG seeds,
+unique identifiers). Both hooks are opt-in and independent.
+
+| Variable | When the adapter calls it | Use it to |
+|---|---|---|
+| `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` | Before the snapshot is taken | Drain/close resources that won't survive the snapshot |
+| `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH`     | After restore, before serving traffic | Reconnect, refresh credentials, reseed randomness, regenerate unique IDs |
+
+Each hook is an empty `POST`; your application must respond with a `2xx` status.
+A non-`2xx` response, a connection failure, or taking longer than 60 seconds to
+respond fails the SnapStart phase (initialization for the before-checkpoint hook,
+restore for the after-restore hook) instead of serving traffic against an
+improperly prepared application.
+
+After restore, the adapter also automatically refreshes its own HTTP connection
+to your application, so it never reuses a connection captured in the snapshot, and
+then re-runs the readiness check before admitting traffic. By default this wait is
+unbounded; set `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (fractional seconds allowed)
+to bound it, in which case a restore whose application does not report ready within
+that timeout fails.
+
+> These hook paths are control-plane operations. External requests (via API
+> Gateway or ALB) that target a configured hook path receive `403 Forbidden` and
+> are never forwarded to your application, so choose paths your normal traffic
+> does not use.
+>
+> **Warning:** that guard exists only while the adapter is in the request path —
+> that is, when your application runs on Lambda behind the adapter. The hook routes
+> are ordinary application routes that mutate state, so if you run the same image
+> or application **without** the adapter (Amazon ECS, Amazon EKS, a local Docker
+> host), they are reachable and unauthenticated. Don't expose them publicly in
+> those deployments, or protect them yourself.
+
+See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a complete, deployable application.
 
 ## Examples
 
@@ -84,6 +128,8 @@ The readiness check port/path and traffic port can be configured using environme
 - [FastAPI with Response Streaming in Zip](examples/fastapi-response-streaming-zip)
 - [FastAPI with Response Streaming on Lambda Managed Instances](examples/fastapi-response-streaming-lmi)
 - [FastAPI Response Streaming Backend with IAM Auth](examples/fastapi-backend-only-response-streaming/)
+- [FastAPI with SnapStart](examples/fastapi-snapstart)
+- [FastAPI with SnapStart in Zip](examples/fastapi-snapstart-zip)
 - [Flask](examples/flask)
 - [Flask in Zip](examples/flask-zip)
 - [Serverless Django](https://github.com/aws-hebrew-book/serverless-django)  by [@efi-mk](https://github.com/efi-mk)
