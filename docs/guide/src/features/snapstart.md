@@ -76,4 +76,4 @@ AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH=/snapstart/before
 AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH=/snapstart/after
 ```
 
-See the [fastapi-snapstart-zip example](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-snapstart-zip) for a complete, deployable application.
+For complete, deployable applications see the [fastapi-snapstart-zip example](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-snapstart-zip) (zip packaging) and the [fastapi-snapstart example](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-snapstart) (container image).
