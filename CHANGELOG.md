@@ -22,8 +22,9 @@
     consumers keep the last published release (`1.0.0-rc1`) unchanged.
 - Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive
   (fractional seconds allowed, e.g. `0.5`) of the adapter's HTTP connection to your
-  app. Default: 4 seconds. A value that is set but unusable falls back to the
-  default and logs a warning.
+  app. Default: 4 seconds. `0` turns connection reuse off entirely rather than relying
+  on expiry, so every request opens a fresh connection. A value that is set but
+  unusable falls back to the default and logs a warning.
 - Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check
   (fractional seconds allowed, e.g. `0.5`), applied to both the initial cold-start
   readiness wait and the post-SnapStart-restore readiness check. When set and the app

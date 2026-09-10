@@ -827,16 +827,20 @@ pub struct Adapter<C, B> {
 ///
 /// [`Pooling::Disabled`] sets `pool_max_idle_per_host(0)`, turning hyper's pool off
 /// outright so reuse is impossible by construction. A zero `idle_timeout` is NOT a
-/// substitute: expiry is decided by `saturating_duration_since(idle_at) > timeout`,
-/// which reads as not-expired when the clock has not advanced (`ZERO > ZERO` is
-/// false) — the very condition hyper#3810 / rust-lang/rust#79462 describe.
+/// substitute for that, so it is mapped onto the same setting rather than trusted to
+/// expire entries: hyper decides expiry with
+/// `saturating_duration_since(idle_at) > timeout`, which reads as not-expired when the
+/// clock has not advanced (`ZERO > ZERO` is false) — the very condition hyper#3810 /
+/// rust-lang/rust#79462 describe — and it skips spawning the idle-eviction task
+/// altogether for a zero timeout, so on its own zero would park a socket that no
+/// request may reuse until the next checkout evicts it.
 ///
 /// Reads no environment: the caller decides, so the post-restore rebuild cannot
 /// inherit the pre-snapshot restriction.
 fn build_client(idle_timeout: Duration, pooling: Pooling) -> Client<HttpConnector, Body> {
     let mut builder = Client::builder(hyper_util::rt::TokioExecutor::new());
     builder.pool_idle_timeout(idle_timeout);
-    if pooling == Pooling::Disabled {
+    if pooling == Pooling::Disabled || idle_timeout.is_zero() {
         builder.pool_max_idle_per_host(0);
     }
     builder.build(HttpConnector::new())
@@ -1748,7 +1752,8 @@ mod tests {
         assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(30));
         assert_eq!(AdapterOptions::default().pool_idle_timeout, Duration::from_secs(30));
 
-        // Zero is honored (disables idle keep-alive by timeout).
+        // Zero is honored; `build_client` turns the pool off for it, so no connection
+        // is kept alive at all (see `test_zero_idle_timeout_disables_pooling`).
         std::env::set_var(ENV_POOL_IDLE_TIMEOUT_SECONDS, "0");
         assert_eq!(pool_idle_timeout_from_env(), Duration::from_secs(0));
 
@@ -1928,6 +1933,20 @@ mod tests {
         assert!(
             retained,
             "the post-restore client must keep its connection alive for reuse"
+        );
+    }
+
+    /// `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS=0` asks for no keep-alive at all, so
+    /// `build_client` must turn the pool off for it. Left to hyper's expiry the socket
+    /// would instead be parked until the next checkout evicts it — a file descriptor
+    /// held open for a connection nothing may reuse.
+    #[tokio::test]
+    async fn test_zero_idle_timeout_disables_pooling() {
+        let client = build_client(Duration::ZERO, Pooling::Enabled);
+        let retained = connection_retained_after_request(&client).await;
+        assert!(
+            !retained,
+            "a zero idle timeout must DROP the connection, not park it in the idle pool"
         );
     }
 

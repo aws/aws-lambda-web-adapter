@@ -21,7 +21,7 @@ All configuration is done through environment variables, set either in your Dock
 | `AWS_LWA_LAMBDA_RUNTIME_API_PROXY` | Proxy URL for Lambda Runtime API requests | None |
 | `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH` | Inner-app path the adapter POSTs to before a SnapStart snapshot | None |
 | `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` | Inner-app path the adapter POSTs to after a SnapStart restore | None |
-| `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` | Idle keep-alive (seconds) for the adapter's connection to your app | `4` |
+| `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` | Idle keep-alive (seconds, fractional allowed, e.g. `0.5`) for the adapter's connection to your app. `0` turns connection reuse off entirely, so every request opens a fresh connection. A set-but-unusable value falls back to the default with a `warn!`. | `4` |
 | `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` | Seconds (fractional allowed, e.g. `0.5`) the adapter waits for the app to report ready (cold-start init **and** after a SnapStart restore). On expiry the adapter **fails** rather than serving: cold-start init fails (the runtime never starts) and a restore fails. Unset, `0`, or a negative value all mean **wait indefinitely** (no bound); a set-but-`<= 0` or malformed value is ignored with a `warn!`. The `async_init` path keeps its own ~9.8s bound (non-fatal) and is unaffected. | unset / `<= 0` (unbounded) |
 
 ## Deprecated Variables
