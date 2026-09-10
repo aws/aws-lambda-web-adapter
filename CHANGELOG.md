@@ -7,7 +7,8 @@
   (before checkpoint) and `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` (after restore) —
   so it can drain and re-establish connections. A non-2xx response or a connection
   failure fails the corresponding SnapStart phase; the adapter sets no deadline of its
-  own, and the after-restore hook must complete within your function timeout. After
+  own, and the after-restore hook must complete within Lambda's 10-second `Restore`
+  phase limit (which it shares with the readiness check that follows it). After
   restore the adapter refreshes its own HTTP client and re-runs the readiness check
   before admitting traffic, and it rejects external traffic to the hook paths with 403.
   - The crate now stops publishing to crates.io (`publish = false`): Lambda Web

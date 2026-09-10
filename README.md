@@ -96,15 +96,20 @@ Each hook is an empty `POST`; your application must respond with a `2xx` status.
 A non-`2xx` response or a connection failure fails the SnapStart phase
 (initialization for the before-checkpoint hook, restore for the after-restore hook)
 instead of serving traffic against an improperly prepared application. The adapter
-does not impose its own deadline on a hook — Lambda bounds both phases, and the
-after-restore hook in particular must finish within your function timeout.
+does not impose its own deadline on a hook — Lambda bounds both phases. Note that
+Lambda allows the whole `Restore` phase only
+[10 seconds](https://docs.aws.amazon.com/lambda/latest/dg/snapstart-troubleshooting.html),
+not your function timeout: the after-restore hook and the readiness check that follows
+it share that window, and overrunning it fails the restore with
+`Lambda.SnapStartTimeoutException`.
 
 After restore, the adapter also automatically refreshes its own HTTP connection
 to your application, so it never reuses a connection captured in the snapshot, and
 then re-runs the readiness check before admitting traffic. By default this wait is
 unbounded; set `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (fractional seconds allowed)
 to bound it, in which case a restore whose application does not report ready within
-that timeout fails.
+that timeout fails. A value above the 10-second `Restore` limit cannot take effect on
+a restore — Lambda times the phase out first.
 
 > These hook paths are control-plane operations. External requests (via API
 > Gateway or ALB) that target a configured hook path receive `403 Forbidden` and

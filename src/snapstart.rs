@@ -93,11 +93,13 @@ impl SnapStartHooks {
     /// POSTs an empty body to `domain + path`. A non-2xx response or a transport error
     /// fails the SnapStart phase.
     ///
-    /// Deliberately unbounded: Lambda bounds both phases already (the init budget, and
-    /// the function timeout for the after-restore hook). A fixed adapter-side cap was
-    /// unreachable for one phase and killed legitimate slow drains in the other. A cap
-    /// derived from the function timeout isn't possible — Lambda exposes no timeout
-    /// env var and there is no invocation context here.
+    /// Deliberately unbounded: Lambda bounds both phases already — the init budget for
+    /// before-checkpoint, and the 10-second `Restore` phase limit for after-restore
+    /// (`Lambda.SnapStartTimeoutException`), which is NOT the function timeout. That
+    /// 10 seconds also covers runtime load and the readiness check that follows the
+    /// hook POST, so the adapter cannot know its own share of it; overrunning fails the
+    /// restore either way. A fixed adapter-side cap was unreachable in one phase and
+    /// killed legitimate slow drains in the other.
     async fn post_hook(client: &Client<HttpConnector, Body>, domain: &Url, path: &str) -> Result<(), Error> {
         let mut url = domain.clone();
         url.set_path(path);
