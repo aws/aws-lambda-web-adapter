@@ -52,13 +52,16 @@ snapshot boundary:
   3. It re-runs the readiness check against your app before admitting traffic.
 
 Both hook routes must return a `2xx` status code. A non-2xx response or a connection
-failure fails the SnapStart phase. The adapter sets no deadline of its own — the
-after-restore hook must finish within the function timeout (`10` seconds here).
-The readiness check runs on every restore; by default it waits indefinitely for the
-app to recover, but you can bound it with `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS`
-(fractional seconds allowed), in which case a restore whose app does not report
-ready within that timeout fails — so traffic is never served against an app that has
-not finished recovering.
+failure fails the SnapStart phase. The adapter sets no deadline of its own — but
+Lambda allows the whole `Restore` phase only
+[10 seconds](https://docs.aws.amazon.com/lambda/latest/dg/snapstart-troubleshooting.html),
+regardless of the function timeout, and the after-restore hook shares that window with
+the readiness check that follows it. The readiness check runs on every restore; by
+default it waits indefinitely for the app to recover, but you can bound it with
+`AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` (fractional seconds allowed), in which case a
+restore whose app does not report ready within that timeout fails — so traffic is never
+served against an app that has not finished recovering. A bound above the 10-second
+`Restore` limit cannot take effect; Lambda times the phase out first.
 
 These hook routes are protected **on the Lambda invocation path**: the 403 guard
 lives in the adapter, which only sits in front of your app when it is processing
