@@ -1,0 +1,100 @@
+# Dependabot configuration for the example applications.
+#
+# The adapter itself (Cargo.toml at the repo root) is deliberately NOT managed here:
+# it ships as the lambda-adapter binary, and its dependencies are reviewed by hand.
+#
+# Why this file exists: without it, Dependabot opens one pull request per advisory
+# per manifest. That produced 69 open PRs, eight of them against the single lockfile
+# in examples/remix/remix-app, which then conflict with each other as soon as one
+# lands. The `groups` blocks below batch each ecosystem's security fixes so an
+# example app is updated by one PR instead of eight.
+#
+# `open-pull-requests-limit: 0` disables *version* updates and leaves *security*
+# updates on, which keeps the current behavior: Dependabot only opens PRs for
+# advisories, not for every dependency that drifts behind. Raise it per ecosystem if
+# you later want routine version bumps too.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - "/examples/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      examples-npm:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: pip
+    directories:
+      - "/examples/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      examples-pip:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: gomod
+    directories:
+      - "/examples/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      examples-gomod:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: maven
+    directories:
+      - "/examples/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      examples-maven:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: nuget
+    directories:
+      - "/examples/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      examples-nuget:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: cargo
+    directories:
+      - "/examples/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      examples-cargo:
+        applies-to: security-updates
+        patterns:
+          - "*"
