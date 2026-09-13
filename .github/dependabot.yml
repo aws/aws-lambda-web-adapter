@@ -9,10 +9,17 @@
 # lands. The `groups` blocks below batch each ecosystem's security fixes so an
 # example app is updated by one PR instead of eight.
 #
+# Grouping is per directory: Dependabot treats each (ecosystem, directory) pair as its
+# own update and does not batch across directories unless `group-by: dependency-name`
+# is set, which applies to version updates only. So this yields one pull request per
+# example app per ecosystem, which is the intent — a broken bump then fails one
+# example's verification instead of blocking every example's fixes at once.
+#
 # `open-pull-requests-limit: 0` disables *version* updates and leaves *security*
 # updates on, which keeps the current behavior: Dependabot only opens PRs for
-# advisories, not for every dependency that drifts behind. Raise it per ecosystem if
-# you later want routine version bumps too.
+# advisories, not for every dependency that drifts behind. Security updates are
+# explicitly exempt from this limit and do not count toward it. Raise it per ecosystem
+# if you later want routine version bumps too.
 version: 2
 updates:
   - package-ecosystem: npm
