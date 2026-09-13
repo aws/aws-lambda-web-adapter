@@ -20,6 +20,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Narrows the test matrices to the examples a pull request actually touches, so a
+  # dependency bump in one example does not rebuild and boot all eighteen. Any change
+  # to shared code (src/, layer/, this workflow) still verifies everything. See
+  # .github/scripts/select-examples.sh.
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+      zip: ${{ steps.filter.outputs.zip }}
+      stream: ${{ steps.filter.outputs.stream }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needed to diff against the base commit rather than a shallow clone.
+          fetch-depth: 0
+
+      - name: Select the examples to verify
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: .github/scripts/select-examples.sh
+
   validate:
     runs-on: ubuntu-24.04
     steps:
@@ -82,20 +104,13 @@ jobs:
   # Excluded: nginx, flask, aspnet-mvc (web app hardcodes port 8080
   # which conflicts with SAM's Lambda Runtime Interface Emulator).
   test-image:
-    needs: [build-layer]
+    needs: [select, build-layer]
+    if: needs.select.outputs.image != '[]'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        example:
-          - { name: expressjs, path: /, expect_body: "Hi there!" }
-          - { name: fastapi, path: /, expect_body: "message" }
-          - { name: fastapi-background-tasks, path: /, expect_body: "message" }
-          - { name: fasthtml, path: /, expect_body: "Hello World" }
-          - { name: gin, path: /, expect_body: "message" }
-          - { name: nextjs, path: /, expect_body: "Next.js Logo" }
-          - { name: remix, path: /, expect_body: "Welcome to" }
-          - { name: springboot, path: /v1/, expect_body: "Hello, world!" }
+        example: ${{ fromJSON(needs.select.outputs.image) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -178,20 +193,13 @@ jobs:
   # bun/nginx (need third-party layers), arm64 examples (javalin, rust-*),
   # nextjs-zip (Makefile produces a zip artifact incompatible with sam local).
   test-zip:
-    needs: [build-layer]
+    needs: [select, build-layer]
+    if: needs.select.outputs.zip != '[]'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        example:
-          - { name: deno-zip, path: /, expect_body: "success", port: "8000" }
-          - { name: expressjs-zip, path: /, expect_body: "Hi there!", port: "8000" }
-          - { name: fastapi-zip, path: /, expect_body: "message", port: "8000" }
-          - { name: fasthtml-zip, path: /, expect_body: "Hello World", port: "8000" }
-          - { name: flask-zip, path: /, expect_body: "message", port: "8000" }
-          - { name: gin-zip, path: /, expect_body: "message", port: "8000" }
-          - { name: remix-zip, path: /, expect_body: "Welcome to", port: "8000" }
-          - { name: springboot-zip, path: /v1/, expect_body: "Hello, world!", port: "8000" }
+        example: ${{ fromJSON(needs.select.outputs.zip) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -296,14 +304,13 @@ jobs:
   # AWS_REGION is set so boto3 / AnthropicBedrock clients construct without real
   # creds; the verified routes only render UI and never call Bedrock.
   test-stream:
-    needs: [build-layer]
+    needs: [select, build-layer]
+    if: needs.select.outputs.stream != '[]'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        example:
-          - { name: fasthtml-response-streaming, kind: image, path: /, expect_body: "Serverless Bedtime" }
-          - { name: fasthtml-response-streaming-zip, kind: zip-fasthtml, path: /, expect_body: "Click to stream" }
+        example: ${{ fromJSON(needs.select.outputs.stream) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -366,3 +373,36 @@ jobs:
         run: |
           docker rm -f stream-app 2>/dev/null || true
           kill $APP_PID 2>/dev/null || true
+
+  # One aggregate result for the whole workflow, so a reviewer (and the auto-merge
+  # workflow) has a single thing to look at: the matrix jobs' names embed their
+  # parameters ("test-zip (deno-zip, /, success, 8000)") and vanish entirely when
+  # `select` filters an example out, so there is no stable per-example name to read.
+  #
+  # `skipped` counts as a pass — that is what a filtered-out matrix means. `failure`
+  # and `cancelled` do not.
+  #
+  # Note if you ever make this a required check in branch protection: this workflow is
+  # path-filtered to examples/**, so it never runs on a source-only pull request and
+  # the check would never report there, blocking the pull request indefinitely. That
+  # is why Dependabot auto-merge keys off this workflow's completed run instead.
+  examples-verified:
+    if: always()
+    needs: [select, validate, build-layer, test-image, test-zip, test-stream]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the verification results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "A verification job reported '$result'."
+                exit 1
+                ;;
+            esac
+          done
+          echo "All example verification jobs passed."
