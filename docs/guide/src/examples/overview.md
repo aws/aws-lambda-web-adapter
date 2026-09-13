@@ -8,6 +8,8 @@ The repository includes working examples for many popular web frameworks, packag
 |---------|-----------|-----------|
 | [FastAPI](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi) | Docker | No |
 | [FastAPI in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-zip) | Zip | No |
+| [FastAPI SnapStart](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-snapstart) | Docker | No |
+| [FastAPI SnapStart Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-snapstart-zip) | Zip | No |
 | [FastAPI Background Tasks](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-background-tasks) | Docker | No |
 | [FastAPI Response Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming) | Docker | Yes |
 | [FastAPI Response Streaming Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/fastapi-response-streaming-zip) | Zip | Yes |

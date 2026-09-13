@@ -1,3 +1,75 @@
+## Unreleased
+
+### Features
+
+- Add SnapStart support. The adapter notifies your web application at the SnapStart
+  boundary via two opt-in HTTP hooks — `AWS_LWA_SNAPSTART_BEFORE_CHECKPOINT_PATH`
+  (before checkpoint) and `AWS_LWA_SNAPSTART_AFTER_RESTORE_PATH` (after restore) —
+  so it can drain and re-establish connections. A non-2xx response or a connection
+  failure fails the corresponding SnapStart phase; the adapter sets no deadline of its
+  own, and the after-restore hook must complete within Lambda's 10-second `Restore`
+  phase limit (which it shares with the readiness check that follows it). After
+  restore the adapter refreshes its own HTTP client and re-runs the readiness check
+  before admitting traffic, and it rejects external traffic to the hook paths with 403.
+  - The crate now stops publishing to crates.io (`publish = false`): Lambda Web
+    Adapter ships as the `lambda-adapter` binary (a Lambda layer / copied
+    extension), not as a library, so the `lib` target has no external
+    API-stability contract. The internal changes SnapStart required — the
+    `tower::Service` impl's `Response` is now `Response<BoxBody<Bytes, Error>>`
+    (was `Response<Incoming>`) and `check_init_health` now returns `Result` —
+    therefore do not affect any published API. `Bytes` and `BoxBody` are
+    re-exported for convenience of in-repo `Service` users. Existing crates.io
+    consumers keep the last published release (`1.0.0-rc1`) unchanged.
+- Add `AWS_LWA_POOL_IDLE_TIMEOUT_SECONDS` to configure the idle keep-alive
+  (fractional seconds allowed, e.g. `0.5`) of the adapter's HTTP connection to your
+  app. Default: 4 seconds. `0` turns connection reuse off entirely rather than relying
+  on expiry, so every request opens a fresh connection. A value that is set but
+  unusable falls back to the default and logs a warning.
+- Add `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` to bound the readiness check
+  (fractional seconds allowed, e.g. `0.5`), applied to both the initial cold-start
+  readiness wait and the post-SnapStart-restore readiness check. When set and the app
+  does not become ready within it, the adapter **refuses to serve**: cold-start init
+  fails (the runtime never starts) and a restore fails, rather than admitting traffic
+  to an app that never reported ready. When unset (the default) the wait is
+  **unbounded**, matching the previous behavior, so existing slow-cold-start apps
+  are unaffected unless they opt in. On-demand cold starts using `async_init` keep
+  that path's own fixed ~9.8s bound (non-fatal) and are not affected by this variable.
+
+### Bug Fixes
+
+- Fix `AWS_LWA_REMOVE_BASE_PATH` stripping to remove exactly one leading occurrence
+  on a path-segment boundary. Previously it used `trim_start_matches`, which stripped
+  the prefix repeatedly and byte-wise: with `AWS_LWA_REMOVE_BASE_PATH=/api`,
+  `/api/api/order` became `/order` (both copies removed) and `/apiorder` became
+  `/order` (a partial segment stripped). Now `/api/api/order` → `/api/order` and
+  `/apiorder` is passed through unchanged, and a configured trailing slash (`/api/`)
+  is normalized so it behaves like `/api`. **Upgrade note:** this changes the path
+  forwarded to your app for those inputs — deployments that relied on the old
+  repeated/partial stripping should verify their routes.
+- `AWS_LWA_ASYNC_INIT` is now ignored under SnapStart and Provisioned Concurrency, with
+  a warning. It exists to work around the short initialization limit for on-demand cold
+  starts by reporting init complete before the application is ready; neither of those
+  environments has that limit, and finishing early is actively harmful there — SnapStart
+  would snapshot a half-initialized application, and Provisioned Concurrency would mark
+  the environment ready while the application is still booting, which is the latency
+  provisioned concurrency exists to remove. **Upgrade note:** a function that set
+  `AWS_LWA_ASYNC_INIT=true` together with SnapStart or provisioned concurrency now waits
+  for its readiness check during initialization instead of finishing early; bound that
+  wait with `AWS_LWA_READINESS_CHECK_TIMEOUT_SECONDS` if you want it to fail rather than
+  block. Under SnapStart this is also what guarantees the snapshot is taken of a fully
+  initialized application.
+
+### Dependencies
+
+- Bump `lambda_http` to 1.3.0 (from 1.1.1) for the SnapStart lifecycle APIs.
+  **Note:** this changes the `Cookie` header the inner application receives on
+  every deployment, SnapStart or not — a multi-entry API Gateway v2 `cookies` array
+  is now joined with `"; "` instead of `";"`, so your app sees `a=1; b=2` rather
+  than `a=1;b=2`. That is the RFC 6265 form and frameworks accept both, but code
+  that splits on a bare `;` without trimming will see leading spaces.
+
+---
+
 ## v1.0.1 - 2026-05-28
 
 ### Bug Fixes
