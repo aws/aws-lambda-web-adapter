@@ -3,12 +3,12 @@ name: Dependabot Auto-merge
 # Merges Dependabot pull requests that only touch example applications, once Verify
 # Examples has actually verified them.
 #
-# Why workflow_run rather than `gh pr merge --auto`: auto-merge is gated on a
-# repository's *required* status checks, and Verify Examples is path-filtered to
-# examples/**. A required check from a path-filtered workflow never reports on pull
-# requests outside those paths, which would block every source-only pull request
-# forever. Keying off the completed run sidesteps that: the run itself is the evidence,
-# and it is tied to the head commit that will be merged.
+# Keyed off the completed workflow run rather than `gh pr merge --auto`: auto-merge is
+# gated on the repository's *required* status checks, and Verify Examples is
+# path-filtered to examples/**, so requiring its result would never report on a
+# source-only pull request and would block it forever. The completed run is also tied
+# to a specific commit, which is what lets the merge below be pinned to the commit that
+# was verified.
 #
 # Requires no branch protection and no repository settings.
 on:
@@ -35,6 +35,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
         run: |
           set -euo pipefail
@@ -50,29 +51,64 @@ jobs:
             exit 0
           fi
 
-          # Scope by what the PR actually changes rather than by its branch name:
+          # Everything below reasons about $HEAD_SHA, the commit this run verified —
+          # never "whatever the head is now". Dependabot force-pushes its branches when
+          # it rebases or recreates them, so the head can move while the run is
+          # finishing, and merging the new head would merge something unverified.
+          head_now=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q .headRefOid)
+          if [[ "$head_now" != "$HEAD_SHA" ]]; then
+            echo "PR #$PR_NUMBER moved from $HEAD_SHA to $head_now since it was verified."
+            echo "That push starts its own Verify Examples run; leaving the merge to it."
+            exit 0
+          fi
+
+          # Fail closed: an empty file list must never read as "nothing outside
+          # examples/". Keep the API call out of the pipeline so that only grep's
+          # no-match status is tolerated, not a failed or rate-limited request.
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" -q '.[].filename')
+          if [[ -z "$files" ]]; then
+            echo "Could not list the files for PR #$PR_NUMBER; refusing to merge."
+            exit 0
+          fi
+
+          # Scope by what the pull request changes rather than by its branch name:
           # grouped updates do not reliably encode the directory in the ref. Examples
           # are demo apps, so a bad bump costs a broken sample; the adapter's own
           # dependencies, the workflows, and the templates stay manual.
-          outside=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" -q '.[].filename' \
-            | grep -v '^examples/' || true)
+          outside=$(grep -v '^examples/' <<<"$files" || true)
           if [[ -n "$outside" ]]; then
             echo "PR #$PR_NUMBER changes files outside examples/:"
             echo "$outside" | sed 's/^/  /'
             exit 0
           fi
 
-          # Refuse to merge on template validation alone. If `select` filtered every
-          # matrix entry out, the changed example is not covered by a build-and-boot
-          # test, and a human should look at it. This is what keeps an uncovered
-          # example (nextjs-zip, say) from riding in on a green-but-empty run.
-          verified=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
-            -q '[.jobs[] | select(.name | startswith("test-")) | select(.conclusion == "success")] | length')
-          if [[ "$verified" -eq 0 ]]; then
-            echo "No test-* job ran for PR #$PR_NUMBER: the changed example has no"
-            echo "build-and-boot coverage, so this needs a human. Skipping."
+          # Refuse to merge an example that is not built and booted. select-examples.sh
+          # silently drops changed examples with no matrix entry, so a job count alone
+          # would pass a pull request that touches one covered and one uncovered
+          # example while never exercising the second. Require coverage for every
+          # changed example, read at the verified commit.
+          changed_examples=$(cut -d/ -f2 <<<"$files" | sort -u)
+          covered=$(gh api "repos/$REPO/contents/.github/example-matrix.json?ref=$HEAD_SHA" \
+            -H 'Accept: application/vnd.github.raw' -q '[.[][].name] | unique | .[]' | sort -u)
+          uncovered=$(comm -23 <(printf '%s\n' "$changed_examples") <(printf '%s\n' "$covered") || true)
+          if [[ -n "$uncovered" ]]; then
+            echo "PR #$PR_NUMBER changes examples with no build-and-boot coverage:"
+            echo "$uncovered" | sed 's/^/  /'
+            echo "Add them to .github/example-matrix.json, or review this by hand."
             exit 0
           fi
 
-          echo "PR #$PR_NUMBER is example-only and passed $verified verification job(s). Merging."
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch
+          # Covered examples are only actually verified if their jobs ran.
+          verified=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
+            -q '[.jobs[] | select(.name | startswith("test-")) | select(.conclusion == "success")] | length')
+          if [[ "$verified" -eq 0 ]]; then
+            echo "No test-* job succeeded in run $RUN_ID; refusing to merge."
+            exit 0
+          fi
+
+          echo "PR #$PR_NUMBER is example-only, fully covered, and passed $verified verification job(s)."
+          # --match-head-commit closes the remaining window: if the branch moves
+          # between the check above and this call, the merge is refused rather than
+          # applied to an unverified commit.
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
+            --match-head-commit "$HEAD_SHA"
