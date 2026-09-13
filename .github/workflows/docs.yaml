@@ -26,7 +26,11 @@ jobs:
       - name: Install mdBook
         run: |
           mkdir -p $HOME/bin
-          curl --retry 5 --retry-all-errors --retry-delay 5 -sSL \
+          # -f so an HTTP error is an error: without it curl writes the error page to
+          # the output file and exits 0, and tar then fails with "not in gzip format"
+          # — the same misleading failure this commit set out to remove. It is also
+          # what lets --retry see a 5xx as retryable at all.
+          curl --retry 5 --retry-all-errors --retry-delay 5 -sSLf \
             https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz \
             -o /tmp/mdbook.tar.gz
           tar -xz -C $HOME/bin -f /tmp/mdbook.tar.gz
