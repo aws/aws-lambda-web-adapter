@@ -105,3 +105,22 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
+
+  # examples/sinatra/app/src/Gemfile. Easy to miss, and the cost of missing it is not
+  # just ungrouped PRs: without `prefix: chore` Dependabot writes "bump rack from ...",
+  # which has no conventional type, and Commit Lint runs on every pull request with no
+  # path filter. #799 is the evidence — its commit message is
+  # "bump com.fasterxml.jackson.core:jackson-databind" and its Commit Lint check is red.
+  - package-ecosystem: bundler
+    directories:
+      - "/examples/**"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      examples-bundler:
+        applies-to: security-updates
+        patterns:
+          - "*"

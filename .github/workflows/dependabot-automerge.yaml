@@ -20,6 +20,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # Required to list the triggering run's jobs. Declaring a permissions block sets
+  # every scope not named here to none, so without this the Actions API returns 403
+  # and the step aborts on every Dependabot pull request. Same reason
+  # commitlint-comment.yaml declares it.
+  actions: read
 
 jobs:
   merge:
@@ -98,9 +103,15 @@ jobs:
             exit 0
           fi
 
-          # Covered examples are only actually verified if their jobs ran.
+          # Covered examples are only actually verified if their jobs ran. Count lines
+          # rather than asking jq for a length: --paginate applies -q per page, so a
+          # run spanning two pages would yield one count per line ("18\n4"), and
+          # `[[ "18\n4" -eq 0 ]]` is an arithmetic syntax error that evaluates false —
+          # skipping the refusal below and merging. Only the job total keeps this
+          # single-page today, which is not a property worth depending on.
           verified=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
-            -q '[.jobs[] | select(.name | startswith("test-")) | select(.conclusion == "success")] | length')
+            -q '.jobs[] | select(.name | startswith("test-")) | select(.conclusion == "success") | .name' \
+            | wc -l)
           if [[ "$verified" -eq 0 ]]; then
             echo "No test-* job succeeded in run $RUN_ID; refusing to merge."
             exit 0
