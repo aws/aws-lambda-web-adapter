@@ -1,0 +1,78 @@
+name: Dependabot Auto-merge
+
+# Merges Dependabot pull requests that only touch example applications, once Verify
+# Examples has actually verified them.
+#
+# Why workflow_run rather than `gh pr merge --auto`: auto-merge is gated on a
+# repository's *required* status checks, and Verify Examples is path-filtered to
+# examples/**. A required check from a path-filtered workflow never reports on pull
+# requests outside those paths, which would block every source-only pull request
+# forever. Keying off the completed run sidesteps that: the run itself is the evidence,
+# and it is tied to the head commit that will be merged.
+#
+# Requires no branch protection and no repository settings.
+on:
+  workflow_run:
+    workflows: ["Verify Examples"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    # Only a green pull request run can merge anything. A push run has no pull request
+    # to merge, and a failed run is the whole point of the gate.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Merge if this is an example-only Dependabot update that was verified
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${PR_NUMBER:-}" ]]; then
+            echo "Run is not associated with a pull request; nothing to merge."
+            exit 0
+          fi
+
+          author=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author -q .author.login)
+          if [[ "$author" != "app/dependabot" && "$author" != "dependabot[bot]" ]]; then
+            echo "PR #$PR_NUMBER is authored by $author, not Dependabot. Skipping."
+            exit 0
+          fi
+
+          # Scope by what the PR actually changes rather than by its branch name:
+          # grouped updates do not reliably encode the directory in the ref. Examples
+          # are demo apps, so a bad bump costs a broken sample; the adapter's own
+          # dependencies, the workflows, and the templates stay manual.
+          outside=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" -q '.[].filename' \
+            | grep -v '^examples/' || true)
+          if [[ -n "$outside" ]]; then
+            echo "PR #$PR_NUMBER changes files outside examples/:"
+            echo "$outside" | sed 's/^/  /'
+            exit 0
+          fi
+
+          # Refuse to merge on template validation alone. If `select` filtered every
+          # matrix entry out, the changed example is not covered by a build-and-boot
+          # test, and a human should look at it. This is what keeps an uncovered
+          # example (nextjs-zip, say) from riding in on a green-but-empty run.
+          verified=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
+            -q '[.jobs[] | select(.name | startswith("test-")) | select(.conclusion == "success")] | length')
+          if [[ "$verified" -eq 0 ]]; then
+            echo "No test-* job ran for PR #$PR_NUMBER: the changed example has no"
+            echo "build-and-boot coverage, so this needs a human. Skipping."
+            exit 0
+          fi
+
+          echo "PR #$PR_NUMBER is example-only and passed $verified verification job(s). Merging."
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch
