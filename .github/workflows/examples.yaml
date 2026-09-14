@@ -14,6 +14,7 @@ on:
       - ".github/workflows/examples.yaml"
       - ".github/scripts/**"
       - ".github/example-matrix.json"
+      - ".github/dependabot.yml"
   push:
     branches:
       - main
@@ -68,6 +69,15 @@ jobs:
         with:
           use-installer: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The two hand-maintained lists describing the examples drift silently otherwise:
+      # an unclaimed manifest reverts to one Dependabot pull request per advisory with a
+      # commit header Commit Lint rejects, and that is invisible until the pull requests
+      # appear weeks later.
+      - name: Check the example config lists against the tree
+        run: |
+          pip install pyyaml --quiet
+          .github/scripts/check-example-config.sh
 
       - name: Validate all SAM templates
         run: |

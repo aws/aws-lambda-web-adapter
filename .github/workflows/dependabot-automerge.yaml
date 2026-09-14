@@ -83,13 +83,17 @@ jobs:
           else
             # One request covers the whole queue, so the sweep can drop the pull
             # requests that obviously cannot merge — conflicted, or a check red or
-            # pending — before spending ~6 API calls each on them in the script. Only
-            # CONFLICTING is excluded on mergeability, not "anything but MERGEABLE":
-            # GitHub reports UNKNOWN while it recomputes, and dropping those could skip
-            # a pull request forever. With
-            # ~70 open Dependabot pull requests that is the difference between a cheap
-            # hourly sweep and one that eats the token's hourly budget.
-            prs=$(gh pr list --repo "$REPO" --author app/dependabot --state open \
+            # pending — before spending API calls on them in the script. With ~70 open
+            # Dependabot pull requests that is the difference between a cheap hourly
+            # sweep and one that eats the token's hourly budget.
+            #
+            # Only CONFLICTING is excluded on mergeability, not "anything but
+            # MERGEABLE": GitHub reports UNKNOWN while it recomputes, and dropping those
+            # could skip a pull request forever.
+            #
+            # Fail-soft like every lookup in the script: an hourly red run that means
+            # nothing is worse than a quiet skip, and the next sweep retries anyway.
+            if ! prs=$(gh pr list --repo "$REPO" --author app/dependabot --state open \
               --limit 200 --json number,mergeable,statusCheckRollup -q '
                 .[]
                 | select(.mergeable != "CONFLICTING")
@@ -97,7 +101,10 @@ jobs:
                           | select([((.conclusion // .state // "PENDING") | ascii_upcase)]
                                    - ["SUCCESS", "SKIPPED", "NEUTRAL"] | length > 0)]
                          | length == 0)
-                | .number')
+                | .number'); then
+              echo "Could not list open Dependabot pull requests; the next sweep retries."
+              exit 0
+            fi
           fi
 
           if [[ -z "$prs" ]]; then

@@ -72,8 +72,13 @@ head_sha=$(jq -r '.headRefOid' <<<"$pr_json")
 # This workflow's own run is excluded defensively: workflow_run runs do not appear in a
 # pull request's check rollup today, but if that changed, its in-progress state would
 # deadlock every merge.
+#
+# `[]?` rather than `[]`: gh emits null, not [], when the head commit has no check runs
+# yet — a real few-second window every time Dependabot force-pushes a rebase — and
+# iterating null aborts jq. The sweep's pre-filter already tolerates it, which is what
+# makes the combination reachable: it would pass such a pull request straight to here.
 not_green=$(jq -r '
-  .statusCheckRollup[]
+  .statusCheckRollup[]?
   | select((.workflowName // "") != "Dependabot Auto-merge")
   | select([((.conclusion // .state // "PENDING") | ascii_upcase)]
            - ["SUCCESS", "SKIPPED", "NEUTRAL"] | length > 0)

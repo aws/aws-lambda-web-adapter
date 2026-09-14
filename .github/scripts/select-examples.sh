@@ -36,15 +36,28 @@ if [[ -z "${BASE_SHA:-}" ]]; then
   exit 0
 fi
 
-if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+# HEAD is refs/pull/N/merge, so its first parent is the base tip the merge was computed
+# against and its second is the pull request head. HEAD^1..HEAD is therefore exactly the
+# pull request's contribution.
+#
+# Not merge-base with BASE_SHA: that comes from the event payload and can be older than
+# the tip the merge ref was recomputed against, in which case merge-base returns
+# BASE_SHA itself and the diff also picks up everything that landed on main in between.
+# One intervening commit under src/ then trips the shared-path rule below and verifies
+# all eighteen examples — measured on a real merge commit here, one file becomes five.
+# It over-selects rather than under-selects, so it is a cost rather than a hole, but
+# re-running an older pull request is routine enough to be worth avoiding.
+if git rev-parse --verify --quiet HEAD^2 >/dev/null; then
+  base="$(git rev-parse HEAD^1)"
+elif git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+  base="$(git merge-base "$BASE_SHA" HEAD)"
+else
+  # Only reachable when HEAD is not a merge ref and the payload's base is not in this
+  # clone — a shallow fetch, or a fork whose base was never fetched.
   echo "Base commit $BASE_SHA is not available locally: verifying every example."
   emit_all
   exit 0
 fi
-
-# HEAD is the pull request's merge commit, so diffing from the merge base yields
-# exactly the changes the PR contributes.
-base="$(git merge-base "$BASE_SHA" HEAD)"
 changed="$(git diff --name-only "$base" HEAD)"
 echo "Changed files:"
 echo "$changed" | sed 's/^/  /'
