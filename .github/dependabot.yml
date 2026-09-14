@@ -7,7 +7,7 @@
 # Why this file exists: without it, Dependabot opens one pull request per advisory per
 # manifest. That produced 69 open PRs, thirteen of them against the single lockfile in
 # examples/remix/remix-app, which then conflict with each other as soon as one lands.
-# Each entry below groups an example's security fixes into one pull request.
+# Each entry below groups one example's security fixes into one pull request.
 #
 # Why one entry per example rather than one glob entry per ecosystem: `directories` with
 # a glob plus a group produces a single pull request spanning every matching directory —
@@ -19,6 +19,13 @@
 # them — so a cross-directory pull request would essentially never auto-merge. One entry
 # per example makes "one pull request per example app" a property of the config instead
 # of an assumption about Dependabot's grouping behavior.
+#
+# Why the directories are spelled out rather than globbed: Dependabot rejects a config
+# whose entries for one ecosystem it cannot prove have non-overlapping directories, and
+# it cannot prove that for globs — "Dependabot cannot determine if 'npm' has overlapping
+# directories". Each entry therefore lists the manifest directories inside its example.
+# `git ls-files examples` is how this list was derived; a new example needs an entry
+# here, and Verify Examples does not check for that.
 #
 # `open-pull-requests-limit: 0` disables *version* updates and leaves *security* updates
 # on, which keeps the current behavior: pull requests for advisories only, not for every
@@ -32,7 +39,7 @@ version: 2
 updates:
   # bundler
   - package-ecosystem: bundler
-    directories: ["/examples/sinatra", "/examples/sinatra/**"]
+    directories: ["/examples/sinatra/app/src"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -45,7 +52,7 @@ updates:
 
   # cargo
   - package-ecosystem: cargo
-    directories: ["/examples/rust-actix-web-zip", "/examples/rust-actix-web-zip/**"]
+    directories: ["/examples/rust-actix-web-zip/rust_app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -56,7 +63,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: cargo
-    directories: ["/examples/rust-axum-zip", "/examples/rust-axum-zip/**"]
+    directories: ["/examples/rust-axum-zip/rust_app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -69,7 +76,7 @@ updates:
 
   # gomod
   - package-ecosystem: gomod
-    directories: ["/examples/gin", "/examples/gin/**"]
+    directories: ["/examples/gin/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -80,7 +87,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: gomod
-    directories: ["/examples/gin-zip", "/examples/gin-zip/**"]
+    directories: ["/examples/gin-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -91,7 +98,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: gomod
-    directories: ["/examples/go-http-zip", "/examples/go-http-zip/**"]
+    directories: ["/examples/go-http-zip"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -104,7 +111,7 @@ updates:
 
   # maven
   - package-ecosystem: maven
-    directories: ["/examples/javalin-zip", "/examples/javalin-zip/**"]
+    directories: ["/examples/javalin-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -115,7 +122,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: maven
-    directories: ["/examples/springboot", "/examples/springboot/**"]
+    directories: ["/examples/springboot/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -126,7 +133,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: maven
-    directories: ["/examples/springboot-response-streaming-zip", "/examples/springboot-response-streaming-zip/**"]
+    directories: ["/examples/springboot-response-streaming-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -137,7 +144,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: maven
-    directories: ["/examples/springboot-zip", "/examples/springboot-zip/**"]
+    directories: ["/examples/springboot-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -150,7 +157,7 @@ updates:
 
   # npm
   - package-ecosystem: npm
-    directories: ["/examples/bun-graphql-streaming-zip", "/examples/bun-graphql-streaming-zip/**"]
+    directories: ["/examples/bun-graphql-streaming-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -161,7 +168,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/bun-graphql-zip", "/examples/bun-graphql-zip/**"]
+    directories: ["/examples/bun-graphql-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -172,7 +179,12 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/datadog", "/examples/datadog/**"]
+    directories: 
+      - "/examples/datadog/expressjs-streaming/cdk"
+      - "/examples/datadog/expressjs-streaming/lambda-asset/src"
+      - "/examples/datadog/expressjs/cdk"
+      - "/examples/datadog/expressjs/lambda-asset/src"
+      - "/examples/datadog/flask/cdk"
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -183,7 +195,9 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/datadog-zip", "/examples/datadog-zip/**"]
+    directories: 
+      - "/examples/datadog-zip/expressjs/cdk"
+      - "/examples/datadog-zip/expressjs/lambda-asset/src"
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -194,7 +208,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/expressjs", "/examples/expressjs/**"]
+    directories: ["/examples/expressjs/app/src"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -205,7 +219,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/expressjs-zip", "/examples/expressjs-zip/**"]
+    directories: ["/examples/expressjs-zip/hello-world"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -216,7 +230,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/nextjs", "/examples/nextjs/**"]
+    directories: ["/examples/nextjs/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -227,7 +241,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/nextjs-response-streaming", "/examples/nextjs-response-streaming/**"]
+    directories: ["/examples/nextjs-response-streaming"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -238,7 +252,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/nextjs-zip", "/examples/nextjs-zip/**"]
+    directories: ["/examples/nextjs-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -249,7 +263,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/remix", "/examples/remix/**"]
+    directories: ["/examples/remix/remix-app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -260,7 +274,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/remix-zip", "/examples/remix-zip/**"]
+    directories: ["/examples/remix-zip/remix-app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -271,7 +285,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/sls", "/examples/sls/**"]
+    directories: ["/examples/sls/nestjs"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -282,7 +296,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/sqs-expressjs", "/examples/sqs-expressjs/**"]
+    directories: ["/examples/sqs-expressjs/app/src"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -293,7 +307,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
-    directories: ["/examples/sveltekit-ssr-zip", "/examples/sveltekit-ssr-zip/**"]
+    directories: ["/examples/sveltekit-ssr-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -306,7 +320,7 @@ updates:
 
   # nuget
   - package-ecosystem: nuget
-    directories: ["/examples/aspnet-mvc", "/examples/aspnet-mvc/**"]
+    directories: ["/examples/aspnet-mvc/src"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -317,7 +331,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: nuget
-    directories: ["/examples/aspnet-mvc-zip", "/examples/aspnet-mvc-zip/**"]
+    directories: ["/examples/aspnet-mvc-zip/src"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -328,7 +342,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: nuget
-    directories: ["/examples/aspnet-webapi-zip", "/examples/aspnet-webapi-zip/**"]
+    directories: ["/examples/aspnet-webapi-zip/src"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -341,7 +355,7 @@ updates:
 
   # pip
   - package-ecosystem: pip
-    directories: ["/examples/bedrock-agent-fastapi", "/examples/bedrock-agent-fastapi/**"]
+    directories: ["/examples/bedrock-agent-fastapi/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -352,7 +366,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/bedrock-agent-fastapi-zip", "/examples/bedrock-agent-fastapi-zip/**"]
+    directories: ["/examples/bedrock-agent-fastapi-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -363,7 +377,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/datadog", "/examples/datadog/**"]
+    directories: ["/examples/datadog/flask/lambda-asset/src"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -374,7 +388,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi", "/examples/fastapi/**"]
+    directories: ["/examples/fastapi/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -385,7 +399,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-backend-only-response-streaming", "/examples/fastapi-backend-only-response-streaming/**"]
+    directories: ["/examples/fastapi-backend-only-response-streaming/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -396,7 +410,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-background-tasks", "/examples/fastapi-background-tasks/**"]
+    directories: ["/examples/fastapi-background-tasks/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -407,7 +421,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-response-streaming", "/examples/fastapi-response-streaming/**"]
+    directories: ["/examples/fastapi-response-streaming/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -418,7 +432,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-response-streaming-lmi", "/examples/fastapi-response-streaming-lmi/**"]
+    directories: ["/examples/fastapi-response-streaming-lmi/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -429,7 +443,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-response-streaming-zip", "/examples/fastapi-response-streaming-zip/**"]
+    directories: ["/examples/fastapi-response-streaming-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -440,7 +454,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-snapstart", "/examples/fastapi-snapstart/**"]
+    directories: ["/examples/fastapi-snapstart/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -451,7 +465,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-snapstart-zip", "/examples/fastapi-snapstart-zip/**"]
+    directories: ["/examples/fastapi-snapstart-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -462,7 +476,9 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastapi-zip", "/examples/fastapi-zip/**"]
+    directories: 
+      - "/examples/fastapi-zip/app"
+      - "/examples/fastapi-zip/tests"
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -473,7 +489,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fasthtml", "/examples/fasthtml/**"]
+    directories: ["/examples/fasthtml/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -484,7 +500,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fasthtml-response-streaming", "/examples/fasthtml-response-streaming/**"]
+    directories: ["/examples/fasthtml-response-streaming/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -495,7 +511,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fasthtml-response-streaming-zip", "/examples/fasthtml-response-streaming-zip/**"]
+    directories: ["/examples/fasthtml-response-streaming-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -506,7 +522,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fasthtml-zip", "/examples/fasthtml-zip/**"]
+    directories: ["/examples/fasthtml-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -517,7 +533,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastmcp", "/examples/fastmcp/**"]
+    directories: ["/examples/fastmcp/my_mcp_server"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -528,7 +544,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/fastmcp-zip", "/examples/fastmcp-zip/**"]
+    directories: ["/examples/fastmcp-zip/my_mcp_server"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -539,7 +555,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/flask", "/examples/flask/**"]
+    directories: ["/examples/flask/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -550,7 +566,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
-    directories: ["/examples/flask-zip", "/examples/flask-zip/**"]
+    directories: ["/examples/flask-zip/app"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -561,11 +577,11 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # cargo (the adapter itself, not an example). Listed for the commit message only: the
-  # limit keeps version updates off, and dependabot-automerge.sh refuses anything
-  # touching files outside examples/, so an advisory here still gets a hand review — it
-  # just arrives with a header Commit Lint accepts. Pre-emptive: today's six open rust
-  # alerts are all in examples/rust-*-zip, which the entries above cover.
+  # cargo, the adapter itself rather than an example. Listed for the commit message
+  # only: the limit keeps version updates off, and dependabot-automerge.sh refuses
+  # anything touching files outside examples/, so an advisory here still gets a hand
+  # review — it just arrives with a header Commit Lint accepts. Pre-emptive: today's six
+  # open rust alerts are all in examples/rust-*-zip, which the entries above cover.
   - package-ecosystem: cargo
     directories: ["/"]
     schedule:
@@ -578,10 +594,10 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # Not an example, and listed for the naming alone. Every workflow here pins actions
-  # (actions/checkout@v4, Swatinem/rust-cache@v2, orhun/git-cliff-action@v4), so an
-  # actions advisory would open a pull request titled "bump actions/... from X to Y" — no
-  # conventional type, red Commit Lint, manual amend. With the limit at 0 this adds no
+  # Not an example either, and also listed for the naming alone. Every workflow here pins
+  # actions (actions/checkout@v4, Swatinem/rust-cache@v2, orhun/git-cliff-action@v4), so
+  # an actions advisory would open a pull request titled "bump actions/... from X to Y" —
+  # no conventional type, red Commit Lint, manual amend. With the limit at 0 this adds no
   # pull requests; it only names the ones an advisory would produce anyway. There are no
   # open actions alerts today, so this is pre-emptive.
   - package-ecosystem: github-actions

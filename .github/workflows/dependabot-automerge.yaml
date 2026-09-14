@@ -30,10 +30,19 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch:
 
-# One at a time: the two triggers can overlap, and two runs racing to merge the same
-# pull request would just make one of them report a conflict it did not cause.
+# Keyed per pull request, not one group for everything. Only one run per group may be
+# pending, and a new arrival cancels the pending one — so with a single group, a burst of
+# Verify Examples runs finishing together (the normal case, since Dependabot opens its
+# security pull requests in batches) would cancel each other's queued fast-path runs
+# until only the last survived, leaving the rest to the hourly sweep and filling the run
+# history with cancellations that read like failures.
+#
+# The cost is that a sweep run and a fast-path run can now overlap on the same pull
+# request. That is handled where it actually has to be: --match-head-commit plus the
+# mergeStateStatus branch in dependabot-automerge.sh turn the loser into a skip with a
+# reason rather than a red run.
 concurrency:
-  group: dependabot-automerge
+  group: dependabot-automerge-${{ github.event.workflow_run.pull_requests[0].number || 'sweep' }}
   cancel-in-progress: false
 
 permissions:
