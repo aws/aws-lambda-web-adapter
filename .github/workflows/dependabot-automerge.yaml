@@ -52,6 +52,14 @@ permissions:
   # permissions block sets every scope not named here to none, so without this the
   # Actions API returns 403. Same reason commitlint-comment.yaml declares it.
   actions: read
+  # statusCheckRollup is the gate both this file and dependabot-automerge.sh depend on,
+  # and it is made of Checks resources (CheckRun nodes) and commit statuses
+  # (StatusContext nodes). Without these two the query either errors — making the whole
+  # workflow a no-op that looks healthy — or comes back empty, which would read as "all
+  # checks green" and merge past a red Commit Lint. The script also refuses an absent
+  # rollup outright, so neither failure can be mistaken for success.
+  checks: read
+  statuses: read
 
 jobs:
   merge:

@@ -79,12 +79,38 @@ for path in tracked:
             found.add((ecosystem, directory))
 
 configured = set()
+problems = []
 config = yaml.safe_load(open(dependabot_path))
 for update in config["updates"]:
-    for directory in update.get("directories", []):
-        configured.add((update["package-ecosystem"], directory))
+    ecosystem = update["package-ecosystem"]
 
-problems = []
+    # Both spellings are valid Dependabot config. This file uses the plural throughout,
+    # but the singular is the canonical form for one directory and is what someone
+    # adding an entry is likely to reach for — reading only the plural would report
+    # their manifest as unclaimed and tell them to add an entry that is already there.
+    directories = list(update.get("directories") or [])
+    if "directory" in update:
+        directories.append(update["directory"])
+    for directory in directories:
+        configured.add((ecosystem, directory))
+
+    where = f"{ecosystem} {directories}"
+
+    # Both keys below are load-bearing, and an entry copy-pasted without either looks
+    # correct here while silently reverting that example to what this file exists to
+    # prevent. Plain `groups` batches version updates only, so without
+    # `applies-to: security-updates` the grouping does not apply to the advisories that
+    # are the whole point.
+    groups = update.get("groups") or {}
+    if not any(g.get("applies-to") == "security-updates" for g in groups.values()):
+        problems.append(f"{where}: needs a group with `applies-to: security-updates`, "
+                        "or its security updates arrive one pull request per advisory.")
+
+    # And a missing or non-zero limit turns routine version bumps back on for that one
+    # example.
+    if update.get("open-pull-requests-limit") != 0:
+        problems.append(f"{where}: needs `open-pull-requests-limit: 0`, or version "
+                        "updates come back on for it.")
 
 unclaimed = sorted(found - configured)
 if unclaimed:

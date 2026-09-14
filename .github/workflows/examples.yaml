@@ -18,13 +18,19 @@ on:
   push:
     branches:
       - main
+    # Every input select-examples.sh treats as shared, not just src/. layer/bootstrap in
+    # particular is the code path all eight zip examples boot — build-layer copies it
+    # into the artifact each of them injects — so leaving it out meant a regression there
+    # was verified by nothing at all.
     paths:
       - "src/**"
-  # Note that src/, layer/ and Cargo.* are deliberately NOT pull request triggers,
-  # even though select-examples.sh treats them as shared: adding them would run all
-  # eighteen matrix entries on every source pull request. Adapter changes are verified
-  # against the examples on push to main (above), and the selector's shared-path rule
-  # still applies to a pull request that touches both source and examples.
+      - "layer/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  # Those same paths are deliberately NOT pull request triggers: adding them would run
+  # all eighteen matrix entries on every source pull request. Adapter changes are
+  # verified against the examples on push to main (above), and the selector's shared-path
+  # rule still applies to a pull request that touches both source and examples.
   workflow_dispatch:
 
 permissions:

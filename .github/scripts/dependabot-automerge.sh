@@ -88,6 +88,12 @@ head_sha=$(jq -r '.headRefOid' <<<"$pr_json")
 # yet — a real few-second window every time Dependabot force-pushes a rebase — and
 # iterating null aborts jq. The sweep's pre-filter already tolerates it, which is what
 # makes the combination reachable: it would pass such a pull request straight to here.
+# An absent rollup must never read as "everything passed": that is the shape a missing
+# checks/statuses permission would produce, and `[]?` alone would swallow it and merge.
+if [[ "$(jq -r '.statusCheckRollup | type' <<<"$pr_json")" != "array" ]]; then
+  skip "no check rollup available for $head_sha (yet)."
+fi
+
 not_green=$(jq -r '
   .statusCheckRollup[]?
   | select((.workflowName // "") != "Dependabot Auto-merge")
