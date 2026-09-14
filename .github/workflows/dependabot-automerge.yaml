@@ -93,8 +93,24 @@ jobs:
           # example while never exercising the second. Require coverage for every
           # changed example, read at the verified commit.
           changed_examples=$(cut -d/ -f2 <<<"$files" | sort -u)
-          covered=$(gh api "repos/$REPO/contents/.github/example-matrix.json?ref=$HEAD_SHA" \
-            -H 'Accept: application/vnd.github.raw' -q '[.[][].name] | unique | .[]' | sort -u)
+
+          # Read the matrix from the default branch, not from $HEAD_SHA: a Dependabot
+          # branch cut before this file existed 404s at its own head, and gh's non-zero
+          # exit would abort the step with a bare "Not Found" instead of refusing
+          # deliberately like every other unresolvable condition here. The default
+          # branch is also the correct source of truth — this is repository config, the
+          # examples-only guard above means the pull request cannot have changed it, and
+          # a pull_request workflow runs the merge-ref copy anyway, so this is the matrix
+          # the run actually used.
+          if ! matrix_json=$(gh api "repos/$REPO/contents/.github/example-matrix.json" \
+              -H 'Accept: application/vnd.github.raw'); then
+            echo "Could not read .github/example-matrix.json; refusing to merge."
+            exit 0
+          fi
+          if ! covered=$(jq -r '[.[][].name] | unique | .[]' <<<"$matrix_json" | sort -u); then
+            echo "Could not parse .github/example-matrix.json; refusing to merge."
+            exit 0
+          fi
           uncovered=$(comm -23 <(printf '%s\n' "$changed_examples") <(printf '%s\n' "$covered") || true)
           if [[ -n "$uncovered" ]]; then
             echo "PR #$PR_NUMBER changes examples with no build-and-boot coverage:"

@@ -51,8 +51,25 @@ if grep -qE '^(src/|layer/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/examples
   exit 0
 fi
 
-# examples/<name>/... -> <name>
-names="$(grep -oE '^examples/[^/]+' <<<"$changed" | cut -d/ -f2 | sort -u | jq -R . | jq -sc .)"
+# examples/<name>/... -> <name>. grep exits 1 when nothing matches, which pipefail
+# would turn into an unexplained failure of this script — so tolerate that one status,
+# and only that one, by keeping grep out of the pipeline below.
+example_paths="$(grep -oE '^examples/[^/]+' <<<"$changed" || true)"
+
+# Reachable with an empty diff: a stale pull request whose change already landed
+# through a duplicate (#804 and #811 carry an identical update set), or a re-run after
+# the commit merged. "Select nothing" is the documented contract here, not "fail" —
+# the `if: ... != '[]'` guards in examples.yaml skip the test jobs, and the auto-merge
+# workflow refuses a run with no successful test job.
+if [[ -z "$example_paths" ]]; then
+  echo "No example changed: nothing to verify."
+  for kind in image zip stream; do
+    echo "$kind=[]" >>"$GITHUB_OUTPUT"
+  done
+  exit 0
+fi
+
+names="$(cut -d/ -f2 <<<"$example_paths" | sort -u | jq -R . | jq -sc .)"
 echo "Changed examples: $names"
 
 for kind in image zip stream; do
