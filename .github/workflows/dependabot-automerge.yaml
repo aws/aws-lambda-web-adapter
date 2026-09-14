@@ -103,6 +103,28 @@ jobs:
             exit 0
           fi
 
+          # Verify Examples is not the only check on the pull request. Commit Lint runs
+          # on every pull request with no path filter and does go red on Dependabot
+          # PRs (#799), and any check added later would be ignored here too. Anything
+          # not green — including still running, since this workflow cannot wait — means
+          # leave it alone; Dependabot rebases these branches often, and any later
+          # Verify Examples run re-evaluates the pull request.
+          #
+          # This workflow's own run is excluded defensively. workflow_run runs do not
+          # currently appear in a pull request's check rollup, but if that changed, its
+          # in-progress state would deadlock every merge.
+          not_green=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup -q '
+            .statusCheckRollup[]
+            | select((.workflowName // "") != "Dependabot Auto-merge")
+            | select([((.conclusion // .state // "PENDING") | ascii_upcase)]
+                     - ["SUCCESS", "SKIPPED", "NEUTRAL"] | length > 0)
+            | ((.name // .context) + " = " + (.conclusion // .state // "PENDING"))')
+          if [[ -n "$not_green" ]]; then
+            echo "PR #$PR_NUMBER has checks that are not green; refusing to merge:"
+            echo "$not_green" | sed 's/^/  /'
+            exit 0
+          fi
+
           # Covered examples are only actually verified if their jobs ran. Count lines
           # rather than asking jq for a length: --paginate applies -q per page, so a
           # run spanning two pages would yield one count per line ("18\n4"), and

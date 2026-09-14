@@ -6,11 +6,24 @@ on:
       - main
     paths:
       - "examples/**"
+      # This workflow's own machinery. The matrix file and the selector decide what
+      # gets verified at all, so a pull request that changes only those would
+      # otherwise not run here — and a malformed matrix or a selector regression
+      # would land unverified and surface later on an unrelated examples pull
+      # request. Including them makes the workflow verify its own changes.
+      - ".github/workflows/examples.yaml"
+      - ".github/scripts/**"
+      - ".github/example-matrix.json"
   push:
     branches:
       - main
     paths:
       - "src/**"
+  # Note that src/, layer/ and Cargo.* are deliberately NOT pull request triggers,
+  # even though select-examples.sh treats them as shared: adding them would run all
+  # eighteen matrix entries on every source pull request. Adapter changes are verified
+  # against the examples on push to main (above), and the selector's shared-path rule
+  # still applies to a pull request that touches both source and examples.
   workflow_dispatch:
 
 permissions:

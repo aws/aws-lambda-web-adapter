@@ -124,3 +124,23 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
+
+  # Not an example, and listed for the naming alone. Every workflow here pins actions
+  # (actions/checkout@v4, Swatinem/rust-cache@v2, orhun/git-cliff-action@v4), so an
+  # actions advisory would open a PR titled "bump actions/... from X to Y" — no
+  # conventional type, red Commit Lint, manual amend. With the limit at 0 this adds no
+  # pull requests; it only names the ones an advisory would produce anyway. There are
+  # no open actions alerts today, so this is pre-emptive.
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        applies-to: security-updates
+        patterns:
+          - "*"
