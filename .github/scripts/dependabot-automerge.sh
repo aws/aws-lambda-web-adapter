@@ -3,13 +3,16 @@
 # Merges one Dependabot pull request, if it is an example-only update that Verify Examples
 # has verified at the pull request's current head.
 #
-# Whether that merge is unattended depends on main's ruleset, not on this script. The
-# ruleset currently requires one code-owner approval and lists no bypass actors, so the
-# merge is refused until a human approves and the refusal is reported as exactly that.
-# Making this workflow's identity a bypass actor turns the same code into unattended
-# auto-merge, with the guards below as the only thing standing between a bump and main —
-# which is why they are what they are: example-only, verified at this exact head, every
-# check green.
+# It merges after a human approves; it never merges unattended, and it never approves
+# anything itself. main's ruleset requires one code-owner approval
+# (.github/CODEOWNERS assigns `*` to @aws/aws-lambda-tooling) with no bypass actors, and
+# that was left alone deliberately — unattended merging would mean granting some identity
+# the right to bypass code-owner review on a public repository, which is not a trade worth
+# making for dependency bumps in demo applications.
+#
+# What it removes is the second trip: approve once and the merge happens within the hour,
+# but only when the verification covers the exact commit that lands, so a stale approval
+# cannot merge an unverified head.
 #
 # Usage: REPO=<owner/repo> dependabot-automerge.sh <pr-number>
 #
@@ -166,11 +169,9 @@ if [[ -n "$unverified" ]]; then
   skip "in the matrix but not verified by run $run_id: $(join_list "$unverified")"
 fi
 
-# Deliberately no approval gate of its own: the merge is attempted and the outcome
-# classified below. That way this one script behaves correctly whichever way main's
-# ruleset is configured — it merges unattended where the workflow is a bypass actor, and
-# reports "waiting for a code-owner approval" where it is not, with no toggle to keep in
-# sync with a repository setting it cannot see.
+# No approval gate of its own: the merge is attempted and the outcome classified below.
+# The ruleset is the authority on whether a merge may happen, so asking it is both simpler
+# than mirroring its configuration here and impossible to get out of sync with.
 review=$(jq -r '.reviewDecision // "NONE"' <<<"$pr_json")
 echo "PR #$PR is example-only and verified at $head_sha by run $run_id (reviewDecision=$review). Merging."
 
@@ -208,10 +209,9 @@ case "$state" in
   # reported as "a sibling update landed first", which was simply the wrong diagnosis:
   # main's ruleset blocks a merge until the required review is satisfied.
   BLOCKED)
-    # main's ruleset requires one code-owner approval (.github/CODEOWNERS assigns `*` to
-    # @aws/aws-lambda-tooling) and lists no bypass actors, so this is the expected
-    # outcome until either a human approves or this workflow's identity is made a bypass
-    # actor. Named precisely, because it used to be reported as a sibling conflict.
+    # The expected outcome for an unapproved pull request: main's ruleset requires a
+    # code-owner approval. Named precisely, because it used to be reported as a sibling
+    # conflict, which it never was.
     case "$review" in
       APPROVED)
         skip "merge rejected, blocked by main's ruleset even though it is approved — a required rule is unsatisfied."
@@ -220,7 +220,7 @@ case "$state" in
         skip "merge rejected, a reviewer requested changes."
         ;;
       *)
-        skip "verified at ${head_sha:0:8} by run $run_id — blocked awaiting a code-owner approval (@aws/aws-lambda-tooling), or a ruleset bypass actor for this workflow."
+        skip "verified at ${head_sha:0:8} by run $run_id — ready to merge, awaiting a code-owner approval (@aws/aws-lambda-tooling)."
         ;;
     esac
     ;;

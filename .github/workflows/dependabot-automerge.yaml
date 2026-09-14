@@ -3,11 +3,15 @@ name: Dependabot Merge
 # Merges Dependabot pull requests that only touch example applications, once a code owner
 # has approved them and Verify Examples has verified them.
 #
-# Deliberately not "auto-merge on green": main is governed by a ruleset with one required
-# code-owner approval and zero bypass actors, so no token here can merge without a human,
-# and a bot approval cannot satisfy a CODEOWNERS requirement. The value is in the other
-# half — an approval no longer means "and come back later to click merge", and the merge
-# only happens if the verification covers the exact commit that lands. The decision lives in
+# Deliberately not "auto-merge on green". main's ruleset requires one code-owner approval
+# and has no bypass actors, and that was a considered choice rather than an obstacle:
+# unattended merging would mean giving some identity the right to bypass code-owner review
+# on a public repository, which is not worth it for dependency bumps in demo apps. A bot
+# approval could not satisfy a CODEOWNERS requirement anyway.
+#
+# The value is the other half — an approval no longer means "and come back later to click
+# merge", and the merge only happens if the verification covers the exact commit that
+# lands. The decision lives in
 # .github/scripts/dependabot-automerge.sh; this file only decides which pull requests to
 # offer it.
 #
