@@ -63,9 +63,21 @@ MANIFESTS = {
     "composer": ["composer.json"],
 }
 
-tracked = subprocess.run(
-    ["git", "ls-files", "examples"], capture_output=True, text=True, check=True
-).stdout.split()
+# -z with a NUL split, not .split(): git ls-files prints a path containing a space
+# verbatim, so whitespace splitting tears "examples/x/my app/package.json" into fragments
+# and the tail one yields a directory ("/app") that no entry can ever claim — validate
+# failing on a correct config. -z also turns off git's C-style quoting of non-ASCII
+# paths, which would corrupt the derived directory the same way.
+tracked = [
+    path
+    for path in subprocess.run(
+        ["git", "ls-files", "-z", "examples"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    if path
+]
 
 # (ecosystem, directory) pairs the tree actually contains.
 found = set()
@@ -112,7 +124,48 @@ for update in config["updates"]:
         problems.append(f"{where}: needs `open-pull-requests-limit: 0`, or version "
                         "updates come back on for it.")
 
-unclaimed = sorted(found - configured)
+
+def directory_matches(pattern, directory):
+    """Whether a `directories` value covers a directory.
+
+    Globs are a supported form of the key. This config avoids them only because
+    Dependabot refuses several entries for one ecosystem when it cannot prove they do not
+    overlap — which does not apply to a single-entry ecosystem, so a maintainer may well
+    write one. Comparing the values as literal strings reported the covered manifests as
+    unclaimed *and* the pattern as stale, both wrong at once.
+
+    `*` and `?` stay within one path segment and `**` spans several, matching Dependabot's
+    globbing rather than fnmatch's, which would let `*` cross a `/` and so pass over
+    exactly the drift this check exists to catch.
+    """
+    if not any(character in pattern for character in "*?["):
+        return pattern == directory
+
+    parts = pattern.strip("/").split("/")
+    segments = directory.strip("/").split("/")
+
+    def walk(p, s):
+        while p < len(parts):
+            if parts[p] == "**":
+                if p + 1 == len(parts):
+                    return True
+                return any(walk(p + 1, k) for k in range(s, len(segments) + 1))
+            if s >= len(segments) or not fnmatch.fnmatch(segments[s], parts[p]):
+                return False
+            p, s = p + 1, s + 1
+        return s == len(segments)
+
+    return walk(0, 0)
+
+
+unclaimed = sorted(
+    (ecosystem, directory)
+    for ecosystem, directory in found
+    if not any(
+        eco == ecosystem and directory_matches(pattern, directory)
+        for eco, pattern in configured
+    )
+)
 if unclaimed:
     problems.append(
         "These manifests have no matching entry in %s, so Dependabot will open one pull\n"
@@ -123,7 +176,13 @@ if unclaimed:
 # The reverse direction, limited to examples/: an entry for a directory that no longer
 # has a manifest is dead config, and usually means an example was renamed.
 stale = sorted(
-    (eco, d) for eco, d in configured - found if d.startswith("/examples/")
+    (ecosystem, pattern)
+    for ecosystem, pattern in configured
+    if pattern.startswith("/examples/")
+    and not any(
+        eco == ecosystem and directory_matches(pattern, directory)
+        for eco, directory in found
+    )
 )
 if stale:
     problems.append(

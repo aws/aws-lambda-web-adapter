@@ -7,11 +7,21 @@
 # deno-zip, so verifying all 18 matrix entries for it burns runners for no signal.
 # With ~70 open Dependabot PRs against the examples that cost dominates CI.
 #
-# Fails safe: anything this script cannot resolve confidently — no base commit, a
-# base commit not present locally, a change to shared code — verifies everything.
+# Three outcomes, in order of confidence:
+#
+#   verify everything — no base commit (a push or a manual run), a base commit this
+#     clone does not have, or a change to a shared input every example is built against.
+#   verify the examples in the diff — the normal pull request case.
+#   verify nothing — the diff is empty, or touches nothing under examples/. The
+#     `if: ... != '[]'` guards in examples.yaml skip the test jobs, and the auto-merge
+#     gate refuses a run in which the changed example's own job did not succeed.
+#
+# The diff base comes from the merge ref's first parent, not from BASE_SHA, for the
+# reason recorded below.
 #
 # Inputs:
-#   BASE_SHA       base commit to diff against; empty means "verify everything"
+#   BASE_SHA       base commit from the event payload; empty means "verify everything".
+#                  Only used when HEAD is not a merge ref.
 #   GITHUB_OUTPUT  set by Actions
 set -euo pipefail
 
