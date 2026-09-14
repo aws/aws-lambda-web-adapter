@@ -12,7 +12,9 @@ on:
       # would land unverified and surface later on an unrelated examples pull
       # request. Including them makes the workflow verify its own changes.
       - ".github/workflows/examples.yaml"
-      - ".github/scripts/**"
+      - ".github/scripts/select-examples.sh"
+      - ".github/scripts/verify-http.sh"
+      - ".github/scripts/check-example-config.sh"
       - ".github/example-matrix.json"
       - ".github/dependabot.yml"
   push:
@@ -101,7 +103,14 @@ jobs:
             exit 1
           fi
 
+  # Only when something will use it. The artifact exists for the test jobs, so building
+  # it when `select` chose nothing is several minutes of runner time for nobody.
   build-layer:
+    needs: [select]
+    if: >-
+      needs.select.outputs.image != '[]' ||
+      needs.select.outputs.zip != '[]' ||
+      needs.select.outputs.stream != '[]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

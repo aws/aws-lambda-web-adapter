@@ -62,9 +62,14 @@ changed="$(git diff --name-only "$base" HEAD)"
 echo "Changed files:"
 echo "$changed" | sed 's/^/  /'
 
-# Shared inputs every example is built against: the adapter itself, the layer
-# wrapper, this workflow's own machinery.
-if grep -qE '^(src/|layer/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/examples\.yaml$|\.github/scripts/|\.github/example-matrix\.json$)' <<<"$changed"; then
+# Shared inputs every example is built against: the adapter itself, the layer wrapper,
+# this workflow, and the two scripts every test job actually runs.
+#
+# Named individually rather than as .github/scripts/, which now also holds
+# dependabot-automerge.sh and check-example-config.sh — neither of which any example is
+# built against, and matching the whole directory meant a one-line fix to the auto-merge
+# script rebuilt and booted all eighteen entries.
+if grep -qE '^(src/|layer/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/examples\.yaml$|\.github/scripts/verify-http\.sh$|\.github/scripts/select-examples\.sh$|\.github/example-matrix\.json$)' <<<"$changed"; then
   echo "A shared path changed: verifying every example."
   emit_all
   exit 0

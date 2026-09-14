@@ -37,6 +37,14 @@
 # `commit-message.prefix` is what keeps Commit Lint green: it runs on every pull request
 # with no path filter, and Dependabot's default message has no conventional type. #799 is
 # the evidence — commit "bump com.fasterxml.jackson.core:jackson-databind", check red.
+#
+# Every group is named `security` rather than after its example, because Dependabot
+# builds the commit header from the group name and the directory, and commitlint caps the
+# header at 120 characters. `fastapi-backend-only-response-streaming-pip` against its own
+# 53-character directory produced a 137-character header — Commit Lint red, auto-merge
+# refusing on "checks are not all green", and a hand amend needed for exactly the
+# examples with the longest names. The name only has to be unique within its entry; the
+# directory in the header is what distinguishes the pull requests.
 version: 2
 updates:
   # bundler
@@ -48,7 +56,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      sinatra-bundler:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -61,7 +69,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      rust-actix-web-zip-cargo:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: cargo
@@ -72,7 +80,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      rust-axum-zip-cargo:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -85,7 +93,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      gin-gomod:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: gomod
@@ -96,7 +104,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      gin-zip-gomod:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: gomod
@@ -107,7 +115,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      go-http-zip-gomod:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -120,7 +128,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      javalin-zip-maven:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: maven
@@ -131,7 +139,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      springboot-maven:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: maven
@@ -142,7 +150,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      springboot-response-streaming-zip-maven:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: maven
@@ -153,7 +161,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      springboot-zip-maven:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -166,7 +174,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      bun-graphql-streaming-zip-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -177,7 +185,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      bun-graphql-zip-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -193,7 +201,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      datadog-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -206,7 +214,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      datadog-zip-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -217,7 +225,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      expressjs-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -228,7 +236,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      expressjs-zip-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -239,7 +247,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      nextjs-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -250,7 +258,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      nextjs-response-streaming-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -261,7 +269,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      nextjs-zip-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -272,7 +280,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      remix-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -283,7 +291,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      remix-zip-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -294,7 +302,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      sls-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -305,7 +313,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      sqs-expressjs-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
@@ -316,7 +324,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      sveltekit-ssr-zip-npm:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -329,7 +337,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      aspnet-mvc-nuget:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: nuget
@@ -340,7 +348,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      aspnet-mvc-zip-nuget:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: nuget
@@ -351,7 +359,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      aspnet-webapi-zip-nuget:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -364,7 +372,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      bedrock-agent-fastapi-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -375,7 +383,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      bedrock-agent-fastapi-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -386,7 +394,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      datadog-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -397,7 +405,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -408,7 +416,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-backend-only-response-streaming-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -419,7 +427,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-background-tasks-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -430,7 +438,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-response-streaming-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -441,7 +449,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-response-streaming-lmi-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -452,7 +460,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-response-streaming-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -463,7 +471,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-snapstart-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -474,7 +482,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-snapstart-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -487,7 +495,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastapi-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -498,7 +506,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fasthtml-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -509,7 +517,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fasthtml-response-streaming-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -520,7 +528,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fasthtml-response-streaming-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -531,7 +539,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fasthtml-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -542,7 +550,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastmcp-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -553,7 +561,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      fastmcp-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -564,7 +572,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      flask-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: pip
@@ -575,7 +583,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      flask-zip-pip:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -592,7 +600,7 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      adapter-cargo:
+      security:
         applies-to: security-updates
         patterns: ["*"]
 
@@ -610,6 +618,6 @@ updates:
     commit-message:
       prefix: ci
     groups:
-      github-actions:
+      security:
         applies-to: security-updates
         patterns: ["*"]
