@@ -39,15 +39,10 @@ Resources:
       Type: String
       Value: !Ref LambdaAdapterLayerArm64
 
-  LambdaAdapterLayerArm64VersionParameter:
-    Type: AWS::SSM::Parameter
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub '/lambda-web-adapter/layer/arm64/${CargoPkgVersion}'
-      Description: !Sub 'Layer ARN for the latest Lambda Web Adapter Arm64 Layer: ${CargoPkgVersion}'
-      Type: String
-      Value: !Ref LambdaAdapterLayerArm64
+  # A per-version parameter (/lambda-web-adapter/layer/arm64/<CargoPkgVersion>) used to
+  # live here. See the matching comment in template-x86_64.yaml for why it was removed:
+  # a Name change replaces the parameter, and UpdateReplacePolicy: Retain orphaned the
+  # old name, so re-deploying an already-used version failed with AlreadyExists.
 
 Outputs:
   LambdaAdapterLayerArm64Arn:

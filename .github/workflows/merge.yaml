@@ -36,7 +36,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+        # Retried, and downloaded to a file rather than piped into tar: the default
+        # shell has no pipefail, so curl's exit status was discarded and a transient
+        # connection reset surfaced as an unrecoverable tar error.
+        run: |
+          curl --retry 5 --retry-all-errors --retry-delay 5 -LsSf \
+            https://get.nexte.st/latest/linux -o /tmp/cargo-nextest.tar.gz
+          tar zxf /tmp/cargo-nextest.tar.gz -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: linting
         run: |
@@ -271,7 +277,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+        # Retried, and downloaded to a file rather than piped into tar: the default
+        # shell has no pipefail, so curl's exit status was discarded and a transient
+        # connection reset surfaced as an unrecoverable tar error.
+        run: |
+          curl --retry 5 --retry-all-errors --retry-delay 5 -LsSf \
+            https://get.nexte.st/latest/linux -o /tmp/cargo-nextest.tar.gz
+          tar zxf /tmp/cargo-nextest.tar.gz -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - uses: actions/setup-python@v4
         with:
@@ -334,7 +346,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+        # Retried, and downloaded to a file rather than piped into tar: the default
+        # shell has no pipefail, so curl's exit status was discarded and a transient
+        # connection reset surfaced as an unrecoverable tar error.
+        run: |
+          curl --retry 5 --retry-all-errors --retry-delay 5 -LsSf \
+            https://get.nexte.st/latest/linux -o /tmp/cargo-nextest.tar.gz
+          tar zxf /tmp/cargo-nextest.tar.gz -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - uses: actions/setup-python@v4
         with:
