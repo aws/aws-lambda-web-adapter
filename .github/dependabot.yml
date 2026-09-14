@@ -24,8 +24,10 @@
 # whose entries for one ecosystem it cannot prove have non-overlapping directories, and
 # it cannot prove that for globs — "Dependabot cannot determine if 'npm' has overlapping
 # directories". Each entry therefore lists the manifest directories inside its example.
-# `git ls-files examples` is how this list was derived; a new example needs an entry
-# here, and Verify Examples does not check for that.
+# `git ls-files examples` is how this list was derived. A new example needs an entry
+# here; .github/scripts/check-example-config.sh enforces that from Verify Examples, so a
+# missing one fails the pull request that adds the example rather than surfacing weeks
+# later as ungrouped pull requests.
 #
 # `open-pull-requests-limit: 0` disables *version* updates and leaves *security* updates
 # on, which keeps the current behavior: pull requests for advisories only, not for every

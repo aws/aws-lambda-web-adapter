@@ -39,16 +39,28 @@ try:
 except ImportError:  # pragma: no cover - only on a runner without PyYAML
     sys.exit("PyYAML is required: pip install pyyaml")
 
-# Ecosystem -> manifest filenames Dependabot keys off. Only the ones present under
-# examples/; add a row when an example introduces a new ecosystem.
+# Ecosystem -> every manifest filename Dependabot keys off for it. One name per
+# ecosystem is not enough: an example shipping only a pyproject.toml is still pip, and
+# missing that name would break the guard in both directions — the drift would pass
+# unnoticed, and a maintainer who added the correct entry for it would be told the entry
+# is stale.
+#
+# Ecosystems with no example today are listed anyway, so the next example that
+# introduces one is caught rather than silently unguarded.
+#
+# Deliberately absent: docker. There are 24 Dockerfiles under examples/, but Dependabot
+# alerts do not cover base images, so there is nothing for a security-updates entry to
+# group — including it here would fail this check for entries that should not exist.
 MANIFESTS = {
     "npm": ["package.json"],
-    "pip": ["requirements.txt"],
+    "pip": ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"],
     "gomod": ["go.mod"],
     "maven": ["pom.xml"],
-    "nuget": ["*.csproj"],
+    "gradle": ["build.gradle", "build.gradle.kts"],
+    "nuget": ["*.csproj", "*.fsproj", "*.vbproj", "packages.config"],
     "cargo": ["Cargo.toml"],
-    "bundler": ["Gemfile"],
+    "bundler": ["Gemfile", "*.gemspec"],
+    "composer": ["composer.json"],
 }
 
 tracked = subprocess.run(

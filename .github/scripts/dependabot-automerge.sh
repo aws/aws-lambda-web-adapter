@@ -53,13 +53,24 @@ skip() {
 # result is not wrapped: unlike the request, it cannot fail transiently, and a parse
 # failure there is a real fault that should be loud.
 if ! pr_json=$(gh pr view "$PR" --repo "$REPO" \
-    --json author,headRefOid,statusCheckRollup); then
+    --json author,headRefOid,state,statusCheckRollup); then
   skip "could not read the pull request."
 fi
 
 author=$(jq -r '.author.login' <<<"$pr_json")
 if [[ "$author" != "app/dependabot" && "$author" != "dependabot[bot]" ]]; then
   skip "authored by $author, not Dependabot."
+fi
+
+# A closed pull request passes every other gate — its rollup is still green, its files
+# are unchanged, and --match-head-commit still matches a head that never moved — so
+# without this it would reach `gh pr merge` and the outcome would rest on whatever
+# mergeStateStatus happens to report for a merged pull request. Reachable through the
+# overlap the concurrency keys deliberately allow: a sweep run and a fast-path run on
+# the same pull request, where the loser is merging something already merged.
+pr_state=$(jq -r '.state' <<<"$pr_json")
+if [[ "$pr_state" != "OPEN" ]]; then
+  skip "state is $pr_state, not OPEN."
 fi
 
 head_sha=$(jq -r '.headRefOid' <<<"$pr_json")
@@ -160,8 +171,15 @@ if gh pr merge "$PR" --repo "$REPO" --squash --delete-branch \
   exit 0
 fi
 
-head_after=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid || echo unknown)
-state=$(gh pr view "$PR" --repo "$REPO" --json mergeStateStatus -q .mergeStateStatus || echo UNKNOWN)
+if ! after=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,state,mergeStateStatus); then
+  skip "merge failed and the pull request could not be re-read."
+fi
+head_after=$(jq -r '.headRefOid' <<<"$after")
+state=$(jq -r '.mergeStateStatus' <<<"$after")
+# The same race as above, but landing between the check and this call.
+if [[ "$(jq -r '.state' <<<"$after")" != "OPEN" ]]; then
+  skip "merge rejected, the pull request is no longer open — something else landed it."
+fi
 if [[ "$head_after" != "$head_sha" ]]; then
   skip "merge rejected, head moved to $head_after."
 fi
