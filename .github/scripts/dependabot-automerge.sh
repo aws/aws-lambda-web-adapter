@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #
-# Merges one Dependabot pull request, if it is an example-only update that a code owner
-# has approved and that Verify Examples has verified at the pull request's current head.
+# Merges one Dependabot pull request, if it is an example-only update that Verify Examples
+# has verified at the pull request's current head.
 #
-# Not auto-merge-on-green: main is governed by a ruleset requiring one code-owner approval
-# with zero bypass actors, so nothing can merge without a human. What this removes is the
-# second trip — approve once and the merge happens within the hour, but only if the
-# verification covers the exact commit being merged, so a stale approval cannot land an
-# unverified head.
+# Whether that merge is unattended depends on main's ruleset, not on this script. The
+# ruleset currently requires one code-owner approval and lists no bypass actors, so the
+# merge is refused until a human approves and the refusal is reported as exactly that.
+# Making this workflow's identity a bypass actor turns the same code into unattended
+# auto-merge, with the guards below as the only thing standing between a bump and main —
+# which is why they are what they are: example-only, verified at this exact head, every
+# check green.
 #
 # Usage: REPO=<owner/repo> dependabot-automerge.sh <pr-number>
 #
@@ -164,28 +166,13 @@ if [[ -n "$unverified" ]]; then
   skip "in the matrix but not verified by run $run_id: $(join_list "$unverified")"
 fi
 
-# The approval is the last gate, and it is checked here rather than earlier on purpose:
-# reaching this line means the pull request is example-only, verified at its current head,
-# and green. Reporting it now makes the job summary a worklist of "verified, waiting only
-# on you" rather than a list of things that may also be unverified.
-#
-# main is governed by a ruleset (not classic branch protection, which is why
-# `branches/main/protection` returns 404): one approving review, `require_code_owner_review`,
-# and zero bypass actors, with .github/CODEOWNERS assigning `*` to @aws/aws-lambda-tooling.
-# No token can merge past that and no bot approval can satisfy it, so this workflow merges
-# after a human approves — it does not approve on anyone's behalf.
-review=$(jq -r '.reviewDecision // ""' <<<"$pr_json")
-case "$review" in
-  APPROVED) ;;
-  CHANGES_REQUESTED)
-    skip "verified at ${head_sha:0:8} by run $run_id, but a reviewer requested changes."
-    ;;
-  *)
-    skip "verified at ${head_sha:0:8} by run $run_id — waiting for a code-owner approval (@aws/aws-lambda-tooling)."
-    ;;
-esac
-
-echo "PR #$PR is example-only, verified at $head_sha by run $run_id, and approved. Merging."
+# Deliberately no approval gate of its own: the merge is attempted and the outcome
+# classified below. That way this one script behaves correctly whichever way main's
+# ruleset is configured — it merges unattended where the workflow is a bypass actor, and
+# reports "waiting for a code-owner approval" where it is not, with no toggle to keep in
+# sync with a repository setting it cannot see.
+review=$(jq -r '.reviewDecision // "NONE"' <<<"$pr_json")
+echo "PR #$PR is example-only and verified at $head_sha by run $run_id (reviewDecision=$review). Merging."
 
 # --match-head-commit closes the remaining window: if the branch moves between the
 # lookups above and this call, the API rejects the merge rather than applying it to an
@@ -221,7 +208,21 @@ case "$state" in
   # reported as "a sibling update landed first", which was simply the wrong diagnosis:
   # main's ruleset blocks a merge until the required review is satisfied.
   BLOCKED)
-    skip "merge rejected, blocked by main's ruleset (review or a required check) — reviewDecision was $review."
+    # main's ruleset requires one code-owner approval (.github/CODEOWNERS assigns `*` to
+    # @aws/aws-lambda-tooling) and lists no bypass actors, so this is the expected
+    # outcome until either a human approves or this workflow's identity is made a bypass
+    # actor. Named precisely, because it used to be reported as a sibling conflict.
+    case "$review" in
+      APPROVED)
+        skip "merge rejected, blocked by main's ruleset even though it is approved — a required rule is unsatisfied."
+        ;;
+      CHANGES_REQUESTED)
+        skip "merge rejected, a reviewer requested changes."
+        ;;
+      *)
+        skip "verified at ${head_sha:0:8} by run $run_id — blocked awaiting a code-owner approval (@aws/aws-lambda-tooling), or a ruleset bypass actor for this workflow."
+        ;;
+    esac
     ;;
   DIRTY | BEHIND | DRAFT | UNKNOWN)
     skip "merge rejected, not mergeable (mergeStateStatus=$state) — most likely a sibling update landed first."
