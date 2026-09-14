@@ -1,14 +1,23 @@
 name: Dependabot Auto-merge
 
 # Merges Dependabot pull requests that only touch example applications, once Verify
-# Examples has actually verified them.
+# Examples has actually verified them. The decision lives in
+# .github/scripts/dependabot-automerge.sh; this file only decides which pull requests to
+# offer it.
 #
-# Keyed off the completed workflow run rather than `gh pr merge --auto`: auto-merge is
-# gated on the repository's *required* status checks, and Verify Examples is
-# path-filtered to examples/**, so requiring its result would never report on a
-# source-only pull request and would block it forever. The completed run is also tied
-# to a specific commit, which is what lets the merge below be pinned to the commit that
-# was verified.
+# Two triggers, deliberately:
+#
+#   workflow_run — the fast path. A pull request that is already green elsewhere merges
+#     within seconds of its verification finishing.
+#   schedule — the catch-all. Checks on a pull request settle in arbitrary order, so
+#     Verify Examples can finish while Commit Lint or CodeQL is still running. With only
+#     the first trigger, such a pull request was skipped and never reconsidered, because
+#     nothing else re-triggers this workflow: Dependabot pushes a branch only when it
+#     rebases or recreates it, so an idle pull request could wait indefinitely.
+#
+# Not `gh pr merge --auto`: auto-merge is gated on the repository's *required* status
+# checks, and Verify Examples is path-filtered to examples/**, so requiring its result
+# would never report on a source-only pull request and would block it forever.
 #
 # Requires no branch protection and no repository settings.
 on:
@@ -16,176 +25,81 @@ on:
     workflows: ["Verify Examples"]
     types:
       - completed
+  schedule:
+    # Hourly, off the hour to avoid the busiest minute.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+# One at a time: the two triggers can overlap, and two runs racing to merge the same
+# pull request would just make one of them report a conflict it did not cause.
+concurrency:
+  group: dependabot-automerge
+  cancel-in-progress: false
 
 permissions:
   contents: write
   pull-requests: write
-  # Required to list the triggering run's jobs. Declaring a permissions block sets
-  # every scope not named here to none, so without this the Actions API returns 403
-  # and the step aborts on every Dependabot pull request. Same reason
-  # commitlint-comment.yaml declares it.
+  # Required to list a run's jobs and to look a run up by head SHA. Declaring a
+  # permissions block sets every scope not named here to none, so without this the
+  # Actions API returns 403. Same reason commitlint-comment.yaml declares it.
   actions: read
 
 jobs:
   merge:
-    # Only a green pull request run can merge anything. A push run has no pull request
-    # to merge, and a failed run is the whole point of the gate.
-    if: >-
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     steps:
-      - name: Merge if this is an example-only Dependabot update that was verified
+      - uses: actions/checkout@v4
+        with:
+          # Pinned to the default branch on purpose. This job holds a write token, so it
+          # must never run a script from a pull request's head — the ref is not derived
+          # from the event under any trigger.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Merge eligible Dependabot pull requests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          # Empty for schedule and manual runs, which sweep every open Dependabot PR.
+          TRIGGERED_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${PR_NUMBER:-}" ]]; then
-            echo "Run is not associated with a pull request; nothing to merge."
+          if [[ -n "${TRIGGERED_PR:-}" ]]; then
+            prs="$TRIGGERED_PR"
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # A run with no associated pull request: a push to main, or a fork.
+            echo "Triggering run has no pull request; nothing to do."
+            exit 0
+          else
+            # One request covers the whole queue, so the sweep can drop the pull
+            # requests that obviously cannot merge — conflicted, or a check red or
+            # pending — before spending ~6 API calls each on them in the script. Only
+            # CONFLICTING is excluded on mergeability, not "anything but MERGEABLE":
+            # GitHub reports UNKNOWN while it recomputes, and dropping those could skip
+            # a pull request forever. With
+            # ~70 open Dependabot pull requests that is the difference between a cheap
+            # hourly sweep and one that eats the token's hourly budget.
+            prs=$(gh pr list --repo "$REPO" --author app/dependabot --state open \
+              --limit 200 --json number,mergeable,statusCheckRollup -q '
+                .[]
+                | select(.mergeable != "CONFLICTING")
+                | select([.statusCheckRollup[]?
+                          | select([((.conclusion // .state // "PENDING") | ascii_upcase)]
+                                   - ["SUCCESS", "SKIPPED", "NEUTRAL"] | length > 0)]
+                         | length == 0)
+                | .number')
+          fi
+
+          if [[ -z "$prs" ]]; then
+            echo "No open Dependabot pull requests."
             exit 0
           fi
 
-          author=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author -q .author.login)
-          if [[ "$author" != "app/dependabot" && "$author" != "dependabot[bot]" ]]; then
-            echo "PR #$PR_NUMBER is authored by $author, not Dependabot. Skipping."
-            exit 0
-          fi
-
-          # Everything below reasons about $HEAD_SHA, the commit this run verified —
-          # never "whatever the head is now". Dependabot force-pushes its branches when
-          # it rebases or recreates them, so the head can move while the run is
-          # finishing, and merging the new head would merge something unverified.
-          head_now=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q .headRefOid)
-          if [[ "$head_now" != "$HEAD_SHA" ]]; then
-            echo "PR #$PR_NUMBER moved from $HEAD_SHA to $head_now since it was verified."
-            echo "That push starts its own Verify Examples run; leaving the merge to it."
-            exit 0
-          fi
-
-          # Fail closed: an empty file list must never read as "nothing outside
-          # examples/". Keep the API call out of the pipeline so that only grep's
-          # no-match status is tolerated, not a failed or rate-limited request.
-          files=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" -q '.[].filename')
-          if [[ -z "$files" ]]; then
-            echo "Could not list the files for PR #$PR_NUMBER; refusing to merge."
-            exit 0
-          fi
-
-          # Scope by what the pull request changes rather than by its branch name:
-          # grouped updates do not reliably encode the directory in the ref. Examples
-          # are demo apps, so a bad bump costs a broken sample; the adapter's own
-          # dependencies, the workflows, and the templates stay manual.
-          outside=$(grep -v '^examples/' <<<"$files" || true)
-          if [[ -n "$outside" ]]; then
-            echo "PR #$PR_NUMBER changes files outside examples/:"
-            echo "$outside" | sed 's/^/  /'
-            exit 0
-          fi
-
-          # Refuse to merge an example that is not built and booted. select-examples.sh
-          # silently drops changed examples with no matrix entry, so a job count alone
-          # would pass a pull request that touches one covered and one uncovered
-          # example while never exercising the second. Require coverage for every
-          # changed example, read at the verified commit.
-          changed_examples=$(cut -d/ -f2 <<<"$files" | sort -u)
-
-          # Read the matrix from the default branch, not from $HEAD_SHA: a Dependabot
-          # branch cut before this file existed 404s at its own head, and gh's non-zero
-          # exit would abort the step with a bare "Not Found" instead of refusing
-          # deliberately like every other unresolvable condition here. The default
-          # branch is also the correct source of truth — this is repository config, the
-          # examples-only guard above means the pull request cannot have changed it, and
-          # a pull_request workflow runs the merge-ref copy anyway, so this is the matrix
-          # the run actually used.
-          if ! matrix_json=$(gh api "repos/$REPO/contents/.github/example-matrix.json" \
-              -H 'Accept: application/vnd.github.raw'); then
-            echo "Could not read .github/example-matrix.json; refusing to merge."
-            exit 0
-          fi
-          if ! covered=$(jq -r '[.[][].name] | unique | .[]' <<<"$matrix_json" | sort -u); then
-            echo "Could not parse .github/example-matrix.json; refusing to merge."
-            exit 0
-          fi
-          uncovered=$(comm -23 <(printf '%s\n' "$changed_examples") <(printf '%s\n' "$covered") || true)
-          if [[ -n "$uncovered" ]]; then
-            echo "PR #$PR_NUMBER changes examples with no build-and-boot coverage:"
-            echo "$uncovered" | sed 's/^/  /'
-            echo "Add them to .github/example-matrix.json, or review this by hand."
-            exit 0
-          fi
-
-          # Verify Examples is not the only check on the pull request. Commit Lint runs
-          # on every pull request with no path filter and does go red on Dependabot
-          # PRs (#799), and any check added later would be ignored here too. Anything
-          # not green — including still running, since this workflow cannot wait — means
-          # leave it alone; Dependabot rebases these branches often, and any later
-          # Verify Examples run re-evaluates the pull request.
-          #
-          # This workflow's own run is excluded defensively. workflow_run runs do not
-          # currently appear in a pull request's check rollup, but if that changed, its
-          # in-progress state would deadlock every merge.
-          not_green=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup -q '
-            .statusCheckRollup[]
-            | select((.workflowName // "") != "Dependabot Auto-merge")
-            | select([((.conclusion // .state // "PENDING") | ascii_upcase)]
-                     - ["SUCCESS", "SKIPPED", "NEUTRAL"] | length > 0)
-            | ((.name // .context) + " = " + (.conclusion // .state // "PENDING"))')
-          if [[ -n "$not_green" ]]; then
-            echo "PR #$PR_NUMBER has checks that are not green; refusing to merge:"
-            echo "$not_green" | sed 's/^/  /'
-            exit 0
-          fi
-
-          # Covered examples are only actually verified if their jobs ran. Count lines
-          # rather than asking jq for a length: --paginate applies -q per page, so a
-          # run spanning two pages would yield one count per line ("18\n4"), and
-          # `[[ "18\n4" -eq 0 ]]` is an arithmetic syntax error that evaluates false —
-          # skipping the refusal below and merging. Only the job total keeps this
-          # single-page today, which is not a property worth depending on.
-          verified=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
-            -q '.jobs[] | select(.name | startswith("test-")) | select(.conclusion == "success") | .name' \
-            | wc -l)
-          if [[ "$verified" -eq 0 ]]; then
-            echo "No test-* job succeeded in run $RUN_ID; refusing to merge."
-            exit 0
-          fi
-
-          echo "PR #$PR_NUMBER is example-only, fully covered, and passed $verified verification job(s)."
-
-          # --match-head-commit closes the remaining window: if the branch moves between
-          # the check above and this call, the API rejects the merge rather than applying
-          # it to an unverified commit.
-          #
-          # A rejection exits non-zero, which would turn this run red like a real
-          # failure. The common cause is benign and expected: sibling pull requests
-          # touching one lockfile finish minutes apart, the first merge conflicts the
-          # rest, and GitHub has not necessarily recomputed mergeability by the time we
-          # get here. Distinguish that from a genuine problem — squash merges disabled,
-          # a missing permission — so this workflow's red/green state still means
-          # something.
-          if gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
-              --match-head-commit "$HEAD_SHA"; then
-            exit 0
-          fi
-
-          head_after=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q .headRefOid || echo unknown)
-          state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeStateStatus -q .mergeStateStatus || echo UNKNOWN)
-          if [[ "$head_after" != "$HEAD_SHA" ]]; then
-            echo "Merge rejected: head moved to $head_after. Leaving PR #$PR_NUMBER alone."
-            exit 0
-          fi
-          case "$state" in
-            DIRTY | BLOCKED | BEHIND | DRAFT | UNKNOWN)
-              echo "Merge rejected: PR #$PR_NUMBER is not mergeable (mergeStateStatus=$state)."
-              echo "Most likely a sibling update landed first. Leaving it alone."
-              exit 0
-              ;;
-          esac
-          echo "Unexpected merge failure for PR #$PR_NUMBER (mergeStateStatus=$state)."
-          echo "Nothing explains it, so failing loudly rather than hiding it."
-          exit 1
+          # One bad pull request must not stop the sweep from considering the rest, so
+          # collect the status instead of letting set -e abort the loop.
+          rc=0
+          for pr in $prs; do
+            .github/scripts/dependabot-automerge.sh "$pr" || rc=1
+          done
+          exit $rc

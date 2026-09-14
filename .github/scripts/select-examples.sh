@@ -17,10 +17,16 @@ set -euo pipefail
 
 MATRIX="$(dirname "$0")/../example-matrix.json"
 
+# Assign before echoing, so a jq failure is the command's status rather than an
+# argument to echo: `echo "x=$(jq ...)"` returns echo's 0 even when jq dies, and
+# set -e never fires. That wrote `image=` to $GITHUB_OUTPUT and reported success — and
+# an empty value is worse than a failure, because `!= '[]'` is true for it, so the test
+# jobs would run and die in fromJSON('') with an error unrelated to the real cause.
 emit_all() {
-  local kind
+  local kind matrix
   for kind in image zip stream; do
-    echo "$kind=$(jq -c ".$kind" "$MATRIX")" >>"$GITHUB_OUTPUT"
+    matrix="$(jq -c ".$kind" "$MATRIX")"
+    echo "$kind=$matrix" >>"$GITHUB_OUTPUT"
   done
 }
 

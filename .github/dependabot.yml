@@ -1,7 +1,8 @@
 # Dependabot configuration for the example applications.
 #
-# The adapter itself (Cargo.toml at the repo root) is deliberately NOT managed here: it
-# ships as the lambda-adapter binary, and its dependencies are reviewed by hand.
+# The adapter itself (Cargo.toml at the repo root) has an entry for its commit message
+# only. Version updates stay off and the auto-merge workflow refuses anything outside
+# examples/, so its dependencies are still reviewed by hand.
 #
 # Why this file exists: without it, Dependabot opens one pull request per advisory per
 # manifest. That produced 69 open PRs, thirteen of them against the single lockfile in
@@ -557,6 +558,23 @@ updates:
       prefix: chore
     groups:
       flask-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # cargo (the adapter itself, not an example). Listed for the commit message only: the
+  # limit keeps version updates off, and dependabot-automerge.sh refuses anything
+  # touching files outside examples/, so an advisory here still gets a hand review — it
+  # just arrives with a header Commit Lint accepts. Pre-emptive: today's six open rust
+  # alerts are all in examples/rust-*-zip, which the entries above cover.
+  - package-ecosystem: cargo
+    directories: ["/"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      adapter-cargo:
         applies-to: security-updates
         patterns: ["*"]
 
