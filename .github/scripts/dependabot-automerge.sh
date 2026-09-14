@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 #
-# Merges one Dependabot pull request, if it is an example-only update that Verify
-# Examples has verified at the pull request's current head.
+# Merges one Dependabot pull request, if it is an example-only update that a code owner
+# has approved and that Verify Examples has verified at the pull request's current head.
+#
+# Not auto-merge-on-green: main is governed by a ruleset requiring one code-owner approval
+# with zero bypass actors, so nothing can merge without a human. What this removes is the
+# second trip — approve once and the merge happens within the hour, but only if the
+# verification covers the exact commit being merged, so a stale approval cannot land an
+# unverified head.
 #
 # Usage: REPO=<owner/repo> dependabot-automerge.sh <pr-number>
 #
@@ -53,7 +59,7 @@ skip() {
 # result is not wrapped: unlike the request, it cannot fail transiently, and a parse
 # failure there is a real fault that should be loud.
 if ! pr_json=$(gh pr view "$PR" --repo "$REPO" \
-    --json author,headRefOid,state,statusCheckRollup); then
+    --json author,headRefOid,state,reviewDecision,statusCheckRollup); then
   skip "could not read the pull request."
 fi
 
@@ -96,7 +102,7 @@ fi
 
 not_green=$(jq -r '
   .statusCheckRollup[]?
-  | select((.workflowName // "") != "Dependabot Auto-merge")
+  | select((.workflowName // "") != "Dependabot Merge")
   | select([((.conclusion // .state // "PENDING") | ascii_upcase)]
            - ["SUCCESS", "SKIPPED", "NEUTRAL"] | length > 0)
   | ((.name // .context) + " = " + (.conclusion // .state // "PENDING"))' <<<"$pr_json")
@@ -158,7 +164,28 @@ if [[ -n "$unverified" ]]; then
   skip "in the matrix but not verified by run $run_id: $(join_list "$unverified")"
 fi
 
-echo "PR #$PR is example-only and verified at $head_sha by run $run_id. Merging."
+# The approval is the last gate, and it is checked here rather than earlier on purpose:
+# reaching this line means the pull request is example-only, verified at its current head,
+# and green. Reporting it now makes the job summary a worklist of "verified, waiting only
+# on you" rather than a list of things that may also be unverified.
+#
+# main is governed by a ruleset (not classic branch protection, which is why
+# `branches/main/protection` returns 404): one approving review, `require_code_owner_review`,
+# and zero bypass actors, with .github/CODEOWNERS assigning `*` to @aws/aws-lambda-tooling.
+# No token can merge past that and no bot approval can satisfy it, so this workflow merges
+# after a human approves — it does not approve on anyone's behalf.
+review=$(jq -r '.reviewDecision // ""' <<<"$pr_json")
+case "$review" in
+  APPROVED) ;;
+  CHANGES_REQUESTED)
+    skip "verified at ${head_sha:0:8} by run $run_id, but a reviewer requested changes."
+    ;;
+  *)
+    skip "verified at ${head_sha:0:8} by run $run_id — waiting for a code-owner approval (@aws/aws-lambda-tooling)."
+    ;;
+esac
+
+echo "PR #$PR is example-only, verified at $head_sha by run $run_id, and approved. Merging."
 
 # --match-head-commit closes the remaining window: if the branch moves between the
 # lookups above and this call, the API rejects the merge rather than applying it to an
@@ -190,7 +217,13 @@ if [[ "$head_after" != "$head_sha" ]]; then
   skip "merge rejected, head moved to $head_after."
 fi
 case "$state" in
-  DIRTY | BLOCKED | BEHIND | DRAFT | UNKNOWN)
+  # BLOCKED is called out separately because it used to be lumped in with conflicts and
+  # reported as "a sibling update landed first", which was simply the wrong diagnosis:
+  # main's ruleset blocks a merge until the required review is satisfied.
+  BLOCKED)
+    skip "merge rejected, blocked by main's ruleset (review or a required check) — reviewDecision was $review."
+    ;;
+  DIRTY | BEHIND | DRAFT | UNKNOWN)
     skip "merge rejected, not mergeable (mergeStateStatus=$state) — most likely a sibling update landed first."
     ;;
 esac
