@@ -156,8 +156,36 @@ jobs:
           fi
 
           echo "PR #$PR_NUMBER is example-only, fully covered, and passed $verified verification job(s)."
-          # --match-head-commit closes the remaining window: if the branch moves
-          # between the check above and this call, the merge is refused rather than
-          # applied to an unverified commit.
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
-            --match-head-commit "$HEAD_SHA"
+
+          # --match-head-commit closes the remaining window: if the branch moves between
+          # the check above and this call, the API rejects the merge rather than applying
+          # it to an unverified commit.
+          #
+          # A rejection exits non-zero, which would turn this run red like a real
+          # failure. The common cause is benign and expected: sibling pull requests
+          # touching one lockfile finish minutes apart, the first merge conflicts the
+          # rest, and GitHub has not necessarily recomputed mergeability by the time we
+          # get here. Distinguish that from a genuine problem — squash merges disabled,
+          # a missing permission — so this workflow's red/green state still means
+          # something.
+          if gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
+              --match-head-commit "$HEAD_SHA"; then
+            exit 0
+          fi
+
+          head_after=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q .headRefOid || echo unknown)
+          state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeStateStatus -q .mergeStateStatus || echo UNKNOWN)
+          if [[ "$head_after" != "$HEAD_SHA" ]]; then
+            echo "Merge rejected: head moved to $head_after. Leaving PR #$PR_NUMBER alone."
+            exit 0
+          fi
+          case "$state" in
+            DIRTY | BLOCKED | BEHIND | DRAFT | UNKNOWN)
+              echo "Merge rejected: PR #$PR_NUMBER is not mergeable (mergeStateStatus=$state)."
+              echo "Most likely a sibling update landed first. Leaving it alone."
+              exit 0
+              ;;
+          esac
+          echo "Unexpected merge failure for PR #$PR_NUMBER (mergeStateStatus=$state)."
+          echo "Nothing explains it, so failing loudly rather than hiding it."
+          exit 1

@@ -1,139 +1,573 @@
 # Dependabot configuration for the example applications.
 #
-# The adapter itself (Cargo.toml at the repo root) is deliberately NOT managed here:
-# it ships as the lambda-adapter binary, and its dependencies are reviewed by hand.
+# The adapter itself (Cargo.toml at the repo root) is deliberately NOT managed here: it
+# ships as the lambda-adapter binary, and its dependencies are reviewed by hand.
 #
-# Why this file exists: without it, Dependabot opens one pull request per advisory
-# per manifest. That produced 69 open PRs, eight of them against the single lockfile
-# in examples/remix/remix-app, which then conflict with each other as soon as one
-# lands. The `groups` blocks below batch each ecosystem's security fixes so an
-# example app is updated by one PR instead of eight.
+# Why this file exists: without it, Dependabot opens one pull request per advisory per
+# manifest. That produced 69 open PRs, thirteen of them against the single lockfile in
+# examples/remix/remix-app, which then conflict with each other as soon as one lands.
+# Each entry below groups an example's security fixes into one pull request.
 #
-# Grouping is per directory: Dependabot treats each (ecosystem, directory) pair as its
-# own update and does not batch across directories unless `group-by: dependency-name`
-# is set, which applies to version updates only. So this yields one pull request per
-# example app per ecosystem, which is the intent — a broken bump then fails one
-# example's verification instead of blocking every example's fixes at once.
+# Why one entry per example rather than one glob entry per ecosystem: `directories` with
+# a glob plus a group produces a single pull request spanning every matching directory —
+# the "Bump the npm group across 17 directories with 100 updates" form, of which there
+# are hundreds of thousands in the wild. That would be worse here on two counts. A bad
+# bump in one example would block the security fixes for every other example in the
+# group, and .github/workflows/dependabot-automerge.yaml refuses any pull request
+# touching an example that .github/example-matrix.json does not build and boot — most of
+# them — so a cross-directory pull request would essentially never auto-merge. One entry
+# per example makes "one pull request per example app" a property of the config instead
+# of an assumption about Dependabot's grouping behavior.
 #
-# `open-pull-requests-limit: 0` disables *version* updates and leaves *security*
-# updates on, which keeps the current behavior: Dependabot only opens PRs for
-# advisories, not for every dependency that drifts behind. Security updates are
-# explicitly exempt from this limit and do not count toward it. Raise it per ecosystem
-# if you later want routine version bumps too.
+# `open-pull-requests-limit: 0` disables *version* updates and leaves *security* updates
+# on, which keeps the current behavior: pull requests for advisories only, not for every
+# dependency that has drifted. Security updates are explicitly exempt from this limit and
+# do not count toward it.
+#
+# `commit-message.prefix` is what keeps Commit Lint green: it runs on every pull request
+# with no path filter, and Dependabot's default message has no conventional type. #799 is
+# the evidence — commit "bump com.fasterxml.jackson.core:jackson-databind", check red.
 version: 2
 updates:
-  - package-ecosystem: npm
-    directories:
-      - "/examples/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0
-    commit-message:
-      prefix: chore
-    groups:
-      examples-npm:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  - package-ecosystem: pip
-    directories:
-      - "/examples/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0
-    commit-message:
-      prefix: chore
-    groups:
-      examples-pip:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  - package-ecosystem: gomod
-    directories:
-      - "/examples/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0
-    commit-message:
-      prefix: chore
-    groups:
-      examples-gomod:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  - package-ecosystem: maven
-    directories:
-      - "/examples/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0
-    commit-message:
-      prefix: chore
-    groups:
-      examples-maven:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  - package-ecosystem: nuget
-    directories:
-      - "/examples/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0
-    commit-message:
-      prefix: chore
-    groups:
-      examples-nuget:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  - package-ecosystem: cargo
-    directories:
-      - "/examples/**"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0
-    commit-message:
-      prefix: chore
-    groups:
-      examples-cargo:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  # examples/sinatra/app/src/Gemfile. Easy to miss, and the cost of missing it is not
-  # just ungrouped PRs: without `prefix: chore` Dependabot writes "bump rack from ...",
-  # which has no conventional type, and Commit Lint runs on every pull request with no
-  # path filter. #799 is the evidence — its commit message is
-  # "bump com.fasterxml.jackson.core:jackson-databind" and its Commit Lint check is red.
+  # bundler
   - package-ecosystem: bundler
-    directories:
-      - "/examples/**"
+    directories: ["/examples/sinatra", "/examples/sinatra/**"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
     commit-message:
       prefix: chore
     groups:
-      examples-bundler:
+      sinatra-bundler:
         applies-to: security-updates
-        patterns:
-          - "*"
+        patterns: ["*"]
+
+  # cargo
+  - package-ecosystem: cargo
+    directories: ["/examples/rust-actix-web-zip", "/examples/rust-actix-web-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      rust-actix-web-zip-cargo:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directories: ["/examples/rust-axum-zip", "/examples/rust-axum-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      rust-axum-zip-cargo:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # gomod
+  - package-ecosystem: gomod
+    directories: ["/examples/gin", "/examples/gin/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      gin-gomod:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directories: ["/examples/gin-zip", "/examples/gin-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      gin-zip-gomod:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directories: ["/examples/go-http-zip", "/examples/go-http-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      go-http-zip-gomod:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # maven
+  - package-ecosystem: maven
+    directories: ["/examples/javalin-zip", "/examples/javalin-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      javalin-zip-maven:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: maven
+    directories: ["/examples/springboot", "/examples/springboot/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      springboot-maven:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: maven
+    directories: ["/examples/springboot-response-streaming-zip", "/examples/springboot-response-streaming-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      springboot-response-streaming-zip-maven:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: maven
+    directories: ["/examples/springboot-zip", "/examples/springboot-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      springboot-zip-maven:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # npm
+  - package-ecosystem: npm
+    directories: ["/examples/bun-graphql-streaming-zip", "/examples/bun-graphql-streaming-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      bun-graphql-streaming-zip-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/bun-graphql-zip", "/examples/bun-graphql-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      bun-graphql-zip-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/datadog", "/examples/datadog/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      datadog-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/datadog-zip", "/examples/datadog-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      datadog-zip-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/expressjs", "/examples/expressjs/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      expressjs-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/expressjs-zip", "/examples/expressjs-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      expressjs-zip-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/nextjs", "/examples/nextjs/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      nextjs-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/nextjs-response-streaming", "/examples/nextjs-response-streaming/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      nextjs-response-streaming-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/nextjs-zip", "/examples/nextjs-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      nextjs-zip-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/remix", "/examples/remix/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      remix-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/remix-zip", "/examples/remix-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      remix-zip-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/sls", "/examples/sls/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      sls-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/sqs-expressjs", "/examples/sqs-expressjs/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      sqs-expressjs-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directories: ["/examples/sveltekit-ssr-zip", "/examples/sveltekit-ssr-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      sveltekit-ssr-zip-npm:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # nuget
+  - package-ecosystem: nuget
+    directories: ["/examples/aspnet-mvc", "/examples/aspnet-mvc/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      aspnet-mvc-nuget:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: nuget
+    directories: ["/examples/aspnet-mvc-zip", "/examples/aspnet-mvc-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      aspnet-mvc-zip-nuget:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: nuget
+    directories: ["/examples/aspnet-webapi-zip", "/examples/aspnet-webapi-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      aspnet-webapi-zip-nuget:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # pip
+  - package-ecosystem: pip
+    directories: ["/examples/bedrock-agent-fastapi", "/examples/bedrock-agent-fastapi/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      bedrock-agent-fastapi-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/bedrock-agent-fastapi-zip", "/examples/bedrock-agent-fastapi-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      bedrock-agent-fastapi-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/datadog", "/examples/datadog/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      datadog-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi", "/examples/fastapi/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-backend-only-response-streaming", "/examples/fastapi-backend-only-response-streaming/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-backend-only-response-streaming-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-background-tasks", "/examples/fastapi-background-tasks/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-background-tasks-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-response-streaming", "/examples/fastapi-response-streaming/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-response-streaming-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-response-streaming-lmi", "/examples/fastapi-response-streaming-lmi/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-response-streaming-lmi-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-response-streaming-zip", "/examples/fastapi-response-streaming-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-response-streaming-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-snapstart", "/examples/fastapi-snapstart/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-snapstart-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-snapstart-zip", "/examples/fastapi-snapstart-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-snapstart-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastapi-zip", "/examples/fastapi-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastapi-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fasthtml", "/examples/fasthtml/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fasthtml-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fasthtml-response-streaming", "/examples/fasthtml-response-streaming/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fasthtml-response-streaming-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fasthtml-response-streaming-zip", "/examples/fasthtml-response-streaming-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fasthtml-response-streaming-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fasthtml-zip", "/examples/fasthtml-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fasthtml-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastmcp", "/examples/fastmcp/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastmcp-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/fastmcp-zip", "/examples/fastmcp-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      fastmcp-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/flask", "/examples/flask/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      flask-pip:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directories: ["/examples/flask-zip", "/examples/flask-zip/**"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      flask-zip-pip:
+        applies-to: security-updates
+        patterns: ["*"]
 
   # Not an example, and listed for the naming alone. Every workflow here pins actions
   # (actions/checkout@v4, Swatinem/rust-cache@v2, orhun/git-cliff-action@v4), so an
-  # actions advisory would open a PR titled "bump actions/... from X to Y" — no
+  # actions advisory would open a pull request titled "bump actions/... from X to Y" — no
   # conventional type, red Commit Lint, manual amend. With the limit at 0 this adds no
-  # pull requests; it only names the ones an advisory would produce anyway. There are
-  # no open actions alerts today, so this is pre-emptive.
+  # pull requests; it only names the ones an advisory would produce anyway. There are no
+  # open actions alerts today, so this is pre-emptive.
   - package-ecosystem: github-actions
-    directories:
-      - "/"
+    directories: ["/"]
     schedule:
       interval: weekly
     open-pull-requests-limit: 0
@@ -142,5 +576,4 @@ updates:
     groups:
       github-actions:
         applies-to: security-updates
-        patterns:
-          - "*"
+        patterns: ["*"]
