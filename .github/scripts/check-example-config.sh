@@ -29,6 +29,7 @@ MATRIX=.github/example-matrix.json
 python3 - "$DEPENDABOT" "$MATRIX" <<'PY'
 import fnmatch
 import json
+import re
 import subprocess
 import sys
 
@@ -90,6 +91,18 @@ for path in tracked:
         if any(fnmatch.fnmatch(parts[-1], pattern) for pattern in patterns):
             found.add((ecosystem, directory))
 
+# commitlint.config.js is the source of truth for the accepted types; parsed rather than
+# duplicated so this check cannot drift from the linter. An unparseable file yields an
+# empty set, which downgrades the assertion to "a prefix is set".
+COMMITLINT_TYPES = set()
+try:
+    config_js = open("commitlint.config.js").read()
+    enum = re.search(r"['\"]type-enum['\"]\s*:\s*\[[^\[]*\[(.*?)\]", config_js, re.S)
+    if enum:
+        COMMITLINT_TYPES = set(re.findall(r"['\"]([a-z]+)['\"]", enum.group(1)))
+except OSError:
+    pass
+
 configured = set()
 problems = []
 config = yaml.safe_load(open(dependabot_path))
@@ -123,6 +136,25 @@ for update in config["updates"]:
     if update.get("open-pull-requests-limit") != 0:
         problems.append(f"{where}: needs `open-pull-requests-limit: 0`, or version "
                         "updates come back on for it.")
+
+    # The third load-bearing key, and the one this repository has already paid for:
+    # without a prefix Dependabot writes "bump <dep> from x to y", which has no
+    # conventional type, and Commit Lint runs on every pull request with no path filter.
+    # #799 is the evidence. Same shape of regression as the two above — the entry looks
+    # fine here and the bill arrives weeks later on a pull request nobody wrote.
+    #
+    # The accepted types are read from commitlint.config.js rather than copied, so this
+    # cannot disagree with the linter that actually runs. If that file's shape changes the
+    # list comes back empty and the assertion falls back to "a prefix is set", which is
+    # the part that matters; a wrong-but-present prefix would then be caught by Commit
+    # Lint on the pull request that adds the entry.
+    prefix = (update.get("commit-message") or {}).get("prefix")
+    if not prefix:
+        problems.append(f"{where}: needs `commit-message.prefix`, or Commit Lint rejects "
+                        "the header Dependabot generates.")
+    elif COMMITLINT_TYPES and prefix not in COMMITLINT_TYPES:
+        problems.append(f"{where}: `commit-message.prefix: {prefix}` is not one of "
+                        f"commitlint's types ({', '.join(sorted(COMMITLINT_TYPES))}).")
 
 
 def directory_matches(pattern, directory):

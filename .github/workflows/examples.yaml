@@ -432,6 +432,9 @@ jobs:
       - name: Check the verification results
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          IMAGE: ${{ needs.select.outputs.image }}
+          ZIP: ${{ needs.select.outputs.zip }}
+          STREAM: ${{ needs.select.outputs.stream }}
         run: |
           echo "job results: $RESULTS"
           for result in $RESULTS; do
@@ -443,4 +446,20 @@ jobs:
                 ;;
             esac
           done
-          echo "All example verification jobs passed."
+
+          # Green is not the same claim in both cases. Most examples have no matrix entry,
+          # so their pull requests filter every matrix to empty, skip the test jobs, and
+          # arrive here green having built and booted nothing. Say which it was, because a
+          # reviewer reading this one check has nothing else to go on — the per-example job
+          # names vanish when the matrix is filtered, which is why this job exists.
+          verified=$(jq -rn \
+            --argjson image "${IMAGE:-[]}" --argjson zip "${ZIP:-[]}" --argjson stream "${STREAM:-[]}" \
+            '[$image, $zip, $stream] | flatten | map(.name) | unique | join(", ")')
+          if [[ -n "$verified" ]]; then
+            echo "Built and booted: $verified"
+            echo "**Verified:** $verified" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "No example was built or booted; this run verified templates only."
+            echo "**No example was built or booted** — template validation only." \
+              >>"$GITHUB_STEP_SUMMARY"
+          fi

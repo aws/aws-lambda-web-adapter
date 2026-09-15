@@ -35,7 +35,15 @@ MATRIX="$(dirname "$0")/../example-matrix.json"
 emit_all() {
   local kind matrix
   for kind in image zip stream; do
-    matrix="$(jq -c ".$kind" "$MATRIX")"
+    # `has` rather than a bare `.$kind`: jq prints the literal `null` and exits 0 for a
+    # missing key, so a renamed top-level key in the matrix file wrote `stream=null`,
+    # which `!= '[]'` reads as truthy — test-stream would start and die in
+    # fromJSON('null') complaining about the workflow instead of the matrix file. The
+    # selection loop at the bottom already fails loudly here, because `.$kind[]` over
+    # null is a jq error; this is the path every push to main takes.
+    matrix="$(jq -ce --arg kind "$kind" \
+      'if has($kind) then .[$kind] else error("example-matrix.json has no \"" + $kind + "\" key") end' \
+      "$MATRIX")"
     echo "$kind=$matrix" >>"$GITHUB_OUTPUT"
   done
 }
@@ -103,6 +111,23 @@ fi
 
 names="$(cut -d/ -f2 <<<"$example_paths" | sort -u | jq -R . | jq -sc .)"
 echo "Changed examples: $names"
+
+# The matrix covers 18 of the ~46 examples dependabot.yml claims, so for most Dependabot
+# pull requests every matrix comes out empty and examples-verified goes green having
+# built and booted nothing. Failing instead would block those examples permanently, so
+# say it out loud: a reviewer reading one green aggregate check cannot otherwise tell
+# that the bump they are approving was never launched, because the per-example job names
+# disappear when the matrix is filtered.
+uncovered="$(jq -r --argjson names "$names" \
+  '([.image, .zip, .stream] | flatten | map(.name)) as $covered
+   | [$names[] | select(IN($covered[]) | not)] | join(", ")' "$MATRIX")"
+if [[ -n "$uncovered" ]]; then
+  echo "::warning::No matrix entry builds or boots: $uncovered — this run verifies templates only for them."
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    echo "- **Not built or booted:** $uncovered (no \`.github/example-matrix.json\` entry)" \
+      >>"$GITHUB_STEP_SUMMARY"
+  fi
+fi
 
 for kind in image zip stream; do
   matrix="$(jq -c --argjson names "$names" "[.$kind[] | select(.name as \$n | \$names | index(\$n))]" "$MATRIX")"
