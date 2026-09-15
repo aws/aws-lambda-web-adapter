@@ -33,6 +33,13 @@ on:
   # all eighteen matrix entries on every source pull request. Adapter changes are
   # verified against the examples on push to main (above), and the selector's shared-path
   # rule still applies to a pull request that touches both source and examples.
+  #
+  # The push list is deliberately shorter than the selector's shared-input set, which also
+  # names this workflow, verify-http.sh and the matrix file. Those three are pull request
+  # triggers, so a change to any of them already fans out to all eighteen entries before it
+  # lands; repeating them here would only re-run on main what the pull request just ran.
+  # The two lists answer different questions — what starts a run, versus what forces a run
+  # to cover everything.
   workflow_dispatch:
 
 permissions:

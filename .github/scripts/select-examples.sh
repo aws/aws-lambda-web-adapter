@@ -76,7 +76,12 @@ else
   emit_all
   exit 0
 fi
-changed="$(git diff --name-only "$base" HEAD)"
+# --no-renames: rename detection is on by default and prints only the destination, so
+# `git mv examples/fasthtml/app/main.py examples/fasthtml-zip/app/main.py` reported the
+# destination alone — fasthtml was never selected, its matrix entry never ran, and the
+# aggregate went green while the example had lost its app file. Reproduced in a scratch
+# repository: default output one path, --no-renames output both.
+changed="$(git diff --no-renames --name-only "$base" HEAD)"
 echo "Changed files:"
 echo "$changed" | sed 's/^/  /'
 
@@ -95,7 +100,11 @@ fi
 # examples/<name>/... -> <name>. grep exits 1 when nothing matches, which pipefail
 # would turn into an unexplained failure of this script — so tolerate that one status,
 # and only that one, by keeping grep out of the pipeline below.
-example_paths="$(grep -oE '^examples/[^/]+' <<<"$changed" || true)"
+# The trailing slash matters: without it a file sitting directly under examples/ (a
+# README, say) matches and becomes a phantom example name, producing empty matrices and a
+# spurious "no matrix entry builds or boots: README.md" warning. There is no such file
+# today, so this is latent.
+example_paths="$(grep -oE '^examples/[^/]+/' <<<"$changed" || true)"
 
 # Reachable with an empty diff: a stale pull request whose change already landed
 # through a duplicate (#804 and #811 carry an identical update set), or a re-run after
@@ -130,7 +139,12 @@ if [[ -n "$uncovered" ]]; then
 fi
 
 for kind in image zip stream; do
-  matrix="$(jq -c --argjson names "$names" "[.$kind[] | select(.name as \$n | \$names | index(\$n))]" "$MATRIX")"
+  # Same has() assertion as emit_all: without it a renamed top-level key fails here with
+  # jq's bare "Cannot iterate over null", naming neither the file nor the key, while the
+  # push path says which key is missing. Loud is not the same as diagnostic.
+  matrix="$(jq -c --argjson names "$names" --arg kind "$kind" \
+    'if has($kind) | not then error("example-matrix.json has no \"" + $kind + "\" key") else
+       [.[$kind][] | select(.name as $n | $names | index($n))] end' "$MATRIX")"
   echo "$kind=$matrix"
   echo "$kind=$matrix" >>"$GITHUB_OUTPUT"
 done

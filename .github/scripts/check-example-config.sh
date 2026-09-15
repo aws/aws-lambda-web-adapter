@@ -94,12 +94,23 @@ for path in tracked:
 # commitlint.config.js is the source of truth for the accepted types; parsed rather than
 # duplicated so this check cannot drift from the linter. An unparseable file yields an
 # empty set, which downgrades the assertion to "a prefix is set".
+COMMITLINT_HEADER_MAX = 120
 COMMITLINT_TYPES = set()
 try:
     config_js = open("commitlint.config.js").read()
     enum = re.search(r"['\"]type-enum['\"]\s*:\s*\[[^\[]*\[(.*?)\]", config_js, re.S)
     if enum:
         COMMITLINT_TYPES = set(re.findall(r"['\"]([a-z]+)['\"]", enum.group(1)))
+    # The last number in the rule, not the first: the array is [severity, applicability,
+    # value], so a lazy match returns the severity (2) and every header looks over budget.
+    header_max = re.search(
+        r"['\"]header-max-length['\"]\s*:\s*\[\s*\d+\s*,\s*['\"]\w+['\"]\s*,\s*(\d+)",
+        config_js,
+    )
+    # A sanity floor for the same reason: a parse that yields a severity rather than a
+    # length would fail every entry, and a guard that cries wolf is worse than no guard.
+    if header_max and int(header_max.group(1)) >= 40:
+        COMMITLINT_HEADER_MAX = int(header_max.group(1))
 except OSError:
     pass
 
@@ -147,6 +158,35 @@ for update in config["updates"]:
     if is_example and update.get("open-pull-requests-limit") != 0:
         problems.append(f"{where}: needs `open-pull-requests-limit: 0`, or version "
                         "updates come back on for it.")
+
+    # `patterns` is the other half of the grouping claim: a group with
+    # patterns: ["lodash"] satisfies the applies-to assertion above while leaving every
+    # other advisory for that example ungrouped, which is the state this file exists to
+    # prevent.
+    if is_example:
+        for group_name, group in groups.items():
+            if group.get("applies-to") != "security-updates":
+                continue
+            if group.get("patterns") != ["*"]:
+                problems.append(
+                    f"{where}: group {group_name!r} needs `patterns: [\"*\"]`, or "
+                    "advisories outside the pattern arrive one pull request each."
+                )
+
+            # dependabot.yml records why every group is named `security`: the commit
+            # header is built from the group name and the directory, and commitlint caps
+            # it at 120. A group named after its example produced 137. Nothing checked
+            # that, so the next example could reintroduce it — headroom is 11 characters
+            # at the longest directory configured today.
+            for directory in directories:
+                header = (f"chore(deps): bump the {group_name} group in {directory} "
+                          "with 5 updates")
+                if len(header) > COMMITLINT_HEADER_MAX:
+                    problems.append(
+                        f"{where}: group {group_name!r} makes a "
+                        f"{len(header)}-character commit header for {directory}, over "
+                        f"commitlint's {COMMITLINT_HEADER_MAX}; use a shorter group name."
+                    )
 
     # The third load-bearing key, and the one this repository has already paid for:
     # without a prefix Dependabot writes "bump <dep> from x to y", which has no
