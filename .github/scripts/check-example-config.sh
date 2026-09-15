@@ -121,19 +121,30 @@ for update in config["updates"]:
 
     where = f"{ecosystem} {directories}"
 
-    # Both keys below are load-bearing, and an entry copy-pasted without either looks
-    # correct here while silently reverting that example to what this file exists to
-    # prevent. Plain `groups` batches version updates only, so without
+    # The two grouping assertions below apply to example entries only. Everything else in
+    # this script is scoped to examples/ — `found` comes from `git ls-files examples`, the
+    # stale check filters on the prefix — and applying them to the root cargo and
+    # github-actions entries would turn an examples-drift guard into a repository-wide
+    # policy lock: enabling version updates for the adapter's own crates is a normal thing
+    # to want, has nothing to do with example grouping, and would fail validate with a
+    # message that does not hint at editing this script.
+    is_example = any(directory.startswith("/examples/") for directory in directories)
+
+    # Load-bearing for an example: an entry copy-pasted without either key looks correct
+    # here while silently reverting that example to what this file exists to prevent.
+    # Plain `groups` batches version updates only, so without
     # `applies-to: security-updates` the grouping does not apply to the advisories that
     # are the whole point.
     groups = update.get("groups") or {}
-    if not any(g.get("applies-to") == "security-updates" for g in groups.values()):
+    if is_example and not any(
+        g.get("applies-to") == "security-updates" for g in groups.values()
+    ):
         problems.append(f"{where}: needs a group with `applies-to: security-updates`, "
                         "or its security updates arrive one pull request per advisory.")
 
     # And a missing or non-zero limit turns routine version bumps back on for that one
     # example.
-    if update.get("open-pull-requests-limit") != 0:
+    if is_example and update.get("open-pull-requests-limit") != 0:
         problems.append(f"{where}: needs `open-pull-requests-limit: 0`, or version "
                         "updates come back on for it.")
 
@@ -222,8 +233,49 @@ if stale:
         % (dependabot_path, "\n".join(f"  {eco}: {d}" for eco, d in stale))
     )
 
+# The keys each job kind interpolates. Exact sets, not minimums, because an unexpected
+# key is almost always a typo of an expected one — and a typo is worse than an omission
+# here: verify-http.sh skips the body assertion entirely when the expectation is empty
+# (`[ -z "$EXPECT_BODY" ] ||`), so `expect_bodY` would leave the job green while checking
+# only the status code. A missing `port` is merely noisy by comparison: test-zip
+# interpolates it into PORT= and the app does not listen where the verify step looks, so
+# the run burns its 90-second deadline and fails with "expectation not met", which reads
+# as a broken example. Only `stream` fails clearly today, via the `*)` arm on its `kind`.
+MATRIX_KEYS = {
+    "image": {"name", "path", "expect_body"},
+    "zip": {"name", "path", "expect_body", "port"},
+    "stream": {"name", "kind", "path", "expect_body"},
+}
+
 matrix = json.load(open(matrix_path))
-names = {entry["name"] for group in matrix.values() for entry in group}
+
+unknown_kinds = sorted(set(matrix) - set(MATRIX_KEYS))
+if unknown_kinds:
+    problems.append(
+        "%s has kinds no job consumes: %s" % (matrix_path, ", ".join(unknown_kinds))
+    )
+
+for kind, entries in matrix.items():
+    expected = MATRIX_KEYS.get(kind)
+    if expected is None:
+        continue
+    for entry in entries:
+        absent = expected - entry.keys()
+        extra = entry.keys() - expected
+        label = entry.get("name", "<unnamed>")
+        if absent:
+            problems.append(
+                f"{matrix_path} {kind} entry {label!r} is missing "
+                f"{', '.join(sorted(absent))}."
+            )
+        if extra:
+            problems.append(
+                f"{matrix_path} {kind} entry {label!r} has keys no {kind} job reads: "
+                f"{', '.join(sorted(extra))} — a typo of an expected key would leave the "
+                "assertion silently unset."
+            )
+
+names = {entry["name"] for group in matrix.values() for entry in group if "name" in entry}
 import os
 
 missing = sorted(n for n in names if not os.path.isdir(os.path.join("examples", n)))
