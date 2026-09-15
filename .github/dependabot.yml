@@ -1,8 +1,8 @@
 # Dependabot configuration for the example applications.
 #
 # The adapter itself (Cargo.toml at the repo root) has an entry for its commit message
-# only. Version updates stay off and the auto-merge workflow refuses anything outside
-# examples/, so its dependencies are still reviewed by hand.
+# only. Version updates stay off, and every pull request here is reviewed and merged by
+# hand, so its dependencies keep the scrutiny they had.
 #
 # Why this file exists: without it, Dependabot opens one pull request per advisory per
 # manifest. That produced 69 open PRs, thirteen of them against the single lockfile in
@@ -12,13 +12,12 @@
 # Why one entry per example rather than one glob entry per ecosystem: `directories` with
 # a glob plus a group produces a single pull request spanning every matching directory —
 # the "Bump the npm group across 17 directories with 100 updates" form, of which there
-# are hundreds of thousands in the wild. That would be worse here on two counts. A bad
-# bump in one example would block the security fixes for every other example in the
-# group, and .github/workflows/dependabot-automerge.yaml refuses any pull request
-# touching an example that .github/example-matrix.json does not build and boot — most of
-# them — so a cross-directory pull request would essentially never auto-merge. One entry
-# per example makes "one pull request per example app" a property of the config instead
-# of an assumption about Dependabot's grouping behavior.
+# are hundreds of thousands in the wild. That would be worse here: a bad bump in one
+# example would block the security fixes for every other example in the group, and one
+# red matrix job would make a pull request spanning a dozen examples unreviewable — you
+# could not tell which bump broke which app without reading the logs. One entry per
+# example makes "one pull request per example app" a property of the config instead of an
+# assumption about Dependabot's grouping behavior.
 #
 # Why the directories are spelled out rather than globbed: Dependabot rejects a config
 # whose entries for one ecosystem it cannot prove have non-overlapping directories, and
@@ -41,10 +40,10 @@
 # Every group is named `security` rather than after its example, because Dependabot
 # builds the commit header from the group name and the directory, and commitlint caps the
 # header at 120 characters. `fastapi-backend-only-response-streaming-pip` against its own
-# 53-character directory produced a 137-character header — Commit Lint red, auto-merge
-# refusing on "checks are not all green", and a hand amend needed for exactly the
-# examples with the longest names. The name only has to be unique within its entry; the
-# directory in the header is what distinguishes the pull requests.
+# 53-character directory produced a 137-character header — a red Commit Lint check and a
+# hand amend needed for exactly the examples with the longest names. The name only has to
+# be unique within its entry; the directory in the header is what distinguishes the pull
+# requests.
 version: 2
 updates:
   # bundler
@@ -588,10 +587,10 @@ updates:
         patterns: ["*"]
 
   # cargo, the adapter itself rather than an example. Listed for the commit message
-  # only: the limit keeps version updates off, and dependabot-automerge.sh refuses
-  # anything touching files outside examples/, so an advisory here still gets a hand
-  # review — it just arrives with a header Commit Lint accepts. Pre-emptive: today's six
-  # open rust alerts are all in examples/rust-*-zip, which the entries above cover.
+  # only: the limit keeps version updates off, and an advisory here gets the same hand
+  # review as any other change to the adapter — it just arrives with a header Commit Lint
+  # accepts. Pre-emptive: today's six open rust alerts are all in examples/rust-*-zip,
+  # which the entries above cover.
   - package-ecosystem: cargo
     directories: ["/"]
     schedule:

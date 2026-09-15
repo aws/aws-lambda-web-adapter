@@ -16,9 +16,9 @@
 # examples/fastmcp and examples/sveltekit-ssr-zip are recent evidence that examples get
 # added regularly.
 #
-# A stale matrix name is quieter but worse: dependabot-automerge.sh treats a changed
-# example as covered when the matrix names it, so a renamed or deleted example would be
-# credited with coverage it does not have.
+# A stale matrix name is quieter: the selector would keep choosing an example that no
+# longer exists, and its job would fail on a missing working directory rather than on
+# anything to do with the change under review.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

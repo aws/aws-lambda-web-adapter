@@ -13,8 +13,8 @@
 #     clone does not have, or a change to a shared input every example is built against.
 #   verify the examples in the diff — the normal pull request case.
 #   verify nothing — the diff is empty, or touches nothing under examples/. The
-#     `if: ... != '[]'` guards in examples.yaml skip the test jobs, and the auto-merge
-#     gate refuses a run in which the changed example's own job did not succeed.
+#     `if: ... != '[]'` guards in examples.yaml skip the test jobs, and examples-verified
+#     treats a skipped job as a pass, so the workflow is green with nothing to run.
 #
 # The diff base comes from the merge ref's first parent, not from BASE_SHA, for the
 # reason recorded below.
@@ -75,10 +75,9 @@ echo "$changed" | sed 's/^/  /'
 # Shared inputs every example is built against: the adapter itself, the layer wrapper,
 # this workflow, and the two scripts every test job actually runs.
 #
-# Named individually rather than as .github/scripts/, which now also holds
-# dependabot-automerge.sh and check-example-config.sh — neither of which any example is
-# built against, and matching the whole directory meant a one-line fix to the auto-merge
-# script rebuilt and booted all eighteen entries.
+# Named individually rather than as .github/scripts/, which also holds
+# check-example-config.sh — which no example is built against, so matching the whole
+# directory would rebuild and boot all eighteen entries for a change to it.
 if grep -qE '^(src/|layer/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/examples\.yaml$|\.github/scripts/verify-http\.sh$|\.github/scripts/select-examples\.sh$|\.github/example-matrix\.json$)' <<<"$changed"; then
   echo "A shared path changed: verifying every example."
   emit_all
@@ -92,9 +91,8 @@ example_paths="$(grep -oE '^examples/[^/]+' <<<"$changed" || true)"
 
 # Reachable with an empty diff: a stale pull request whose change already landed
 # through a duplicate (#804 and #811 carry an identical update set), or a re-run after
-# the commit merged. "Select nothing" is the documented contract here, not "fail" —
-# the `if: ... != '[]'` guards in examples.yaml skip the test jobs, and the auto-merge
-# workflow refuses a run with no successful test job.
+# the commit merged. "Select nothing" is the documented contract here, not "fail" — the
+# `if: ... != '[]'` guards in examples.yaml skip the test jobs and the workflow is green.
 if [[ -z "$example_paths" ]]; then
   echo "No example changed: nothing to verify."
   for kind in image zip stream; do

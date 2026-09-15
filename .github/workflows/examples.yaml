@@ -412,18 +412,18 @@ jobs:
           docker rm -f stream-app 2>/dev/null || true
           kill $APP_PID 2>/dev/null || true
 
-  # One aggregate result for the whole workflow, so a reviewer (and the auto-merge
-  # workflow) has a single thing to look at: the matrix jobs' names embed their
-  # parameters ("test-zip (deno-zip, /, success, 8000)") and vanish entirely when
-  # `select` filters an example out, so there is no stable per-example name to read.
+  # One aggregate result for the whole workflow, so a reviewer has a single thing to look
+  # at before merging: the matrix jobs' names embed their parameters
+  # ("test-zip (deno-zip, /, success, 8000)") and vanish entirely when `select` filters an
+  # example out, so there is no stable per-example name to read.
   #
   # `skipped` counts as a pass — that is what a filtered-out matrix means. `failure`
   # and `cancelled` do not.
   #
-  # Note if you ever make this a required check in branch protection: this workflow is
-  # path-filtered to examples/**, so it never runs on a source-only pull request and
-  # the check would never report there, blocking the pull request indefinitely. That
-  # is why Dependabot auto-merge keys off this workflow's completed run instead.
+  # Note if you ever make this a required check in main's ruleset: this workflow is
+  # path-filtered, so it never runs on a pull request that touches none of those paths and
+  # the check would never report there, blocking that pull request indefinitely. Making it
+  # required needs a companion job reporting the same name on the complementary paths.
   examples-verified:
     if: always()
     needs: [select, validate, build-layer, test-image, test-zip, test-stream]
