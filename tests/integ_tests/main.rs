@@ -13,7 +13,6 @@ use httpmock::{
     Method::{DELETE, GET, POST, PUT},
     MockServer,
 };
-use hyper::body::Incoming;
 use lambda_http::request::RequestContext;
 use lambda_http::{Body, Context, RequestExt};
 use lambda_web_adapter::{Adapter, AdapterOptions, LambdaInvokeMode, Protocol};
@@ -784,21 +783,10 @@ async fn test_vpc_lattice_v2_event_routes_with_path_query_and_context() {
         when.method(POST)
             .path("/health")
             .query_param("state", "prod")
-            .query_param("mode", "fast")
-            .query_param("mode", "turbo")
-            .body(VPC_LATTICE_BODY)
+            .query_param_count("mode", "fast", 1)
+            .query_param_count("mode", "turbo", 1)
+            .json_body(serde_json::from_str::<serde_json::Value>(VPC_LATTICE_BODY).expect("valid JSON body"))
             .is_true(move |req| {
-                let mut mode_values: Vec<_> = req
-                    .query_params()
-                    .into_iter()
-                    .filter(|(key, _)| key == "mode")
-                    .map(|(_, value)| value)
-                    .collect();
-                mode_values.sort_unstable();
-                if mode_values != vec!["fast".to_string(), "turbo".to_string()] {
-                    return false;
-                }
-
                 let headers = req.headers();
                 let Some(request_context) = headers
                     .get("x-amzn-request-context")
@@ -811,7 +799,18 @@ async fn test_vpc_lattice_v2_event_routes_with_path_query_and_context() {
                     return false;
                 };
 
-                request_context == expected_request_context
+                expected_request_context
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .all(|(key, expected)| match (key.as_str(), expected) {
+                        ("identity", expected_identity) => expected_identity
+                            .as_object()
+                            .into_iter()
+                            .flatten()
+                            .all(|(key, expected)| request_context["identity"][key] == *expected),
+                        (key, expected) => request_context[key] == *expected,
+                    })
             });
         then.status(200).body("vpc lattice");
     });
