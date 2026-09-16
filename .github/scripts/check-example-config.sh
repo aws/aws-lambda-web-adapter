@@ -127,10 +127,26 @@ for update in config["updates"]:
     directories = list(update.get("directories") or [])
     if "directory" in update:
         directories.append(update["directory"])
-    for directory in directories:
-        configured.add((ecosystem, directory))
 
     where = f"{ecosystem} {directories}"
+
+    # `configured` is a set, so a directory claimed twice for one ecosystem would collapse
+    # into one member and every assertion built on it would still pass — the one drift mode
+    # this guard could not see, and the likeliest one in a file of 47 near-identical
+    # entries where the copy that forgets to change the directory is as plausible as the
+    # copy that forgets a key. Dependabot itself rejects it ("Update configs must have a
+    # unique combination of 'package-ecosystem', 'directory', and 'target-branch'"), so
+    # GitHub's own config check would go red — but it names neither entry, while this one
+    # can.
+    for directory in directories:
+        key = (ecosystem, directory)
+        if key in configured:
+            problems.append(
+                f"{where}: {directory} is claimed more than once for {ecosystem}. "
+                "Dependabot requires a unique ecosystem/directory pair and rejects the "
+                "whole file otherwise, at which point none of it applies."
+            )
+        configured.add(key)
 
     # The two grouping assertions below apply to example entries only. Everything else in
     # this script is scoped to examples/ — `found` comes from `git ls-files examples`, the

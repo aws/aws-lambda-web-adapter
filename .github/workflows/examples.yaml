@@ -17,6 +17,15 @@ on:
       - ".github/scripts/check-example-config.sh"
       - ".github/example-matrix.json"
       - ".github/dependabot.yml"
+      # check-example-config.sh parses type-enum and header-max-length out of this file
+      # and asserts every entry's generated commit header against them, so a change to it
+      # has to re-run that assertion. Lowering header-max-length otherwise passes on the
+      # pull request that makes the change — pr.yaml and commitlint.yaml run, neither
+      # invokes the guard — and the bill arrives weeks later as a red Commit Lint on a
+      # Dependabot pull request nobody wrote. Headroom is ~12 characters today. It costs
+      # nothing: the selector does not treat it as a shared input, so such a pull request
+      # selects no examples and only validate does work.
+      - "commitlint.config.js"
   push:
     branches:
       - main
