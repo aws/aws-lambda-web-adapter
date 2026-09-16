@@ -124,9 +124,20 @@ for update in config["updates"]:
     # but the singular is the canonical form for one directory and is what someone
     # adding an entry is likely to reach for — reading only the plural would report
     # their manifest as unclaimed and tell them to add an entry that is already there.
-    directories = list(update.get("directories") or [])
+    # Normalized on collection: Dependabot resolves "/examples/fastapi/app/" and
+    # "/examples/fastapi/app" to the same manifest, but comparing the strings verbatim
+    # reported the first as an entry with no manifest *and* the manifest as having no
+    # entry — two contradictory problems for a config that works, which is the failure
+    # already fixed here twice, for the singular `directory` key and for globs. Stripping
+    # only slashes leaves glob patterns alone. It also lets the duplicate check see
+    # `/examples/x` and `/examples/x/` as the collision Dependabot rejects the file over.
+    def normalize(value):
+        stripped = value.strip("/")
+        return "/" + stripped if stripped else "/"
+
+    directories = [normalize(d) for d in (update.get("directories") or [])]
     if "directory" in update:
-        directories.append(update["directory"])
+        directories.append(normalize(update["directory"]))
 
     where = f"{ecosystem} {directories}"
 
@@ -305,10 +316,19 @@ MATRIX_KEYS = {
 
 matrix = json.load(open(matrix_path))
 
+# Both directions. A key no job reads is dead weight; a kind a job reads that the file
+# does not have is worse — select-examples.sh derives its loops from this file, so that
+# job would get no output line, and `!= '[]'` is true for the empty string.
 unknown_kinds = sorted(set(matrix) - set(MATRIX_KEYS))
 if unknown_kinds:
     problems.append(
         "%s has kinds no job consumes: %s" % (matrix_path, ", ".join(unknown_kinds))
+    )
+
+missing_kinds = sorted(set(MATRIX_KEYS) - set(matrix))
+if missing_kinds:
+    problems.append(
+        "%s is missing kinds a job reads: %s" % (matrix_path, ", ".join(missing_kinds))
     )
 
 for kind, entries in matrix.items():

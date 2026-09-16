@@ -106,7 +106,12 @@ jobs:
       - name: Validate all SAM templates
         run: |
           failed=0
-          for template in $(find examples -maxdepth 2 -name "template.yaml" | sort); do
+          # Both spellings: examples/sinatra and examples/go-http-zip use template.yml,
+          # so a .yaml-only find left them unlinted while examples-verified still claimed
+          # "template validation only" for them — and both have Dependabot entries and no
+          # matrix entry, so that claim is the only thing their pull requests get.
+          for template in $(find examples -maxdepth 2 \
+            \( -name "template.yaml" -o -name "template.yml" \) | sort); do
             dir=$(dirname "$template")
             echo "Validating $dir..."
             if ! sam validate --template "$template" --lint 2>&1; then

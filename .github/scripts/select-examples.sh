@@ -27,6 +27,18 @@ set -euo pipefail
 
 MATRIX="$(dirname "$0")/../example-matrix.json"
 
+# The kinds come from the matrix file, not from three hardcoded lists. Adding a fourth job
+# and its matrix key while forgetting one of those lists wrote no output line for it at
+# all, and `!= '[]'` is true for the empty string — so the job would start and die in
+# fromJSON(''), which is the failure this file's emit_all comment describes. The guard
+# asserts the other direction (a kind a job reads must exist in the file), so between them
+# every key gets a line and every line has a consumer.
+mapfile -t KINDS < <(jq -r 'keys_unsorted[]' "$MATRIX")
+if [[ ${#KINDS[@]} -eq 0 ]]; then
+  echo "No kinds in $MATRIX; refusing to emit an empty selection." >&2
+  exit 1
+fi
+
 # Assign before echoing, so a jq failure is the command's status rather than an
 # argument to echo: `echo "x=$(jq ...)"` returns echo's 0 even when jq dies, and
 # set -e never fires. That wrote `image=` to $GITHUB_OUTPUT and reported success — and
@@ -34,7 +46,7 @@ MATRIX="$(dirname "$0")/../example-matrix.json"
 # jobs would run and die in fromJSON('') with an error unrelated to the real cause.
 emit_all() {
   local kind matrix
-  for kind in image zip stream; do
+  for kind in "${KINDS[@]}"; do
     # `has` rather than a bare `.$kind`: jq prints the literal `null` and exits 0 for a
     # missing key, so a renamed top-level key in the matrix file wrote `stream=null`,
     # which `!= '[]'` reads as truthy — test-stream would start and die in
@@ -112,7 +124,7 @@ example_paths="$(grep -oE '^examples/[^/]+/' <<<"$changed" || true)"
 # `if: ... != '[]'` guards in examples.yaml skip the test jobs and the workflow is green.
 if [[ -z "$example_paths" ]]; then
   echo "No example changed: nothing to verify."
-  for kind in image zip stream; do
+  for kind in "${KINDS[@]}"; do
     echo "$kind=[]" >>"$GITHUB_OUTPUT"
   done
   exit 0
@@ -138,7 +150,7 @@ if [[ -n "$uncovered" ]]; then
   fi
 fi
 
-for kind in image zip stream; do
+for kind in "${KINDS[@]}"; do
   # Same has() assertion as emit_all: without it a renamed top-level key fails here with
   # jq's bare "Cannot iterate over null", naming neither the file nor the key, while the
   # push path says which key is missing. Loud is not the same as diagnostic.
