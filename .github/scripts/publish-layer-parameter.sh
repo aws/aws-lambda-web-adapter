@@ -5,6 +5,11 @@
 # parameter whose Name contains the package version made CloudFormation collide with
 # the retained resource whenever a version was re-used.
 #
+# The PipelineExecutionRole's ssm:PutParameter grant for these names lives in
+# LambdaWebAdapterInfrastructureCDK (lib/infra-template.yaml,
+# PipelineExecutionRolePermissions), which also denies the `latest` pointer that
+# CloudFormation owns.
+#
 # Usage:
 #   publish-layer-parameter.sh <stack-name> <x86_64|arm64> <version> <region>
 set -euo pipefail

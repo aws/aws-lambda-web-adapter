@@ -498,10 +498,11 @@ jobs:
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
       # Both deploys complete before either pointer is written, deliberately. These steps
-      # need ssm:PutParameter, which a SAM-managed PipelineExecutionRole does not have
-      # until .github/scripts/configure-layer-parameter-iam.sh has been run for it, so
-      # AccessDenied is the expected failure of a missed bootstrap. Ordered this way, that
-      # failure leaves both layers published and the version pointers stale; ordered
+      # need ssm:PutParameter, granted to the PipelineExecutionRole by
+      # LambdaWebAdapterInfrastructureCDK (lib/infra-template.yaml,
+      # PipelineExecutionRolePermissions) — so a region whose pipeline-resources stack has
+      # not been updated with that grant fails here with AccessDenied. Ordered this way,
+      # that failure leaves both layers published and the version pointers stale; ordered
       # between the deploys, it left the region with a new x86 layer and no arm64 one.
       - name: Publish versioned x86_64 layer parameter
         run: |
