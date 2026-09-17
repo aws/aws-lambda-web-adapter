@@ -228,13 +228,19 @@ jobs:
         run: |
           echo "CARGO_PKG_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')" >> $GITHUB_ENV
 
+      - name: Resolve the layer stack names
+        run: |
+          # Once, from BETA_STACK_NAME, so the deploy and the publish below cannot drift.
+          echo "X86_STACK=${BETA_STACK_NAME}-x86" >> $GITHUB_ENV
+          echo "ARM64_STACK=${BETA_STACK_NAME}-arm64" >> $GITHUB_ENV
+
       - uses: actions/download-artifact@v4
         with:
           name: packaged-beta-x86_64.yaml
 
       - name: Deploy x86_64 layer to beta account
         run: |
-          sam deploy --stack-name ${BETA_STACK_NAME}-x86 \
+          sam deploy --stack-name ${X86_STACK} \
             --template packaged-beta-x86_64.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -250,7 +256,7 @@ jobs:
 
       - name: Deploy arm64 layer to beta account
         run: |
-          sam deploy --stack-name ${BETA_STACK_NAME}-arm64 \
+          sam deploy --stack-name ${ARM64_STACK} \
             --template packaged-beta-arm64.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -259,6 +265,22 @@ jobs:
             --image-repository ${BETA_IMAGE_REPOSITORY} \
             --no-fail-on-empty-changeset \
             --role-arn ${BETA_CLOUDFORMATION_EXECUTION_ROLE}
+
+      # Both deploys complete before either pointer is written, deliberately. These steps
+      # need ssm:PutParameter, which a SAM-managed PipelineExecutionRole does not have
+      # until .github/scripts/configure-layer-parameter-iam.sh has been run for it, so
+      # AccessDenied is the expected failure of a missed bootstrap. Ordered this way, that
+      # failure leaves both layers published and the version pointers stale; ordered
+      # between the deploys, it left the region with a new x86 layer and no arm64 one.
+      - name: Publish versioned x86_64 layer parameter
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$X86_STACK" x86_64 "${CARGO_PKG_VERSION}" "${BETA_REGION}"
+
+      - name: Publish versioned arm64 layer parameter
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$ARM64_STACK" arm64 "${CARGO_PKG_VERSION}" "${BETA_REGION}"
 
   e2e-test-zip:
     needs: [deploy-beta]
