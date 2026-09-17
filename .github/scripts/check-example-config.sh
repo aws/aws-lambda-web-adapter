@@ -159,6 +159,15 @@ for update in config["updates"]:
             )
         configured.add(key)
 
+    # schedule.interval is required for an updates entry, and its absence is the worst of
+    # the copy-paste failures: Dependabot rejects the whole file, so all 47 groups stop
+    # applying at once and every example reverts to one pull request per advisory. Asserted
+    # for every entry, not just examples — an invalid root cargo or github-actions entry
+    # invalidates the file just the same.
+    if not (update.get("schedule") or {}).get("interval"):
+        problems.append(f"{where}: needs `schedule.interval`; without it Dependabot "
+                        "rejects the whole config and none of the grouping applies.")
+
     # The two grouping assertions below apply to example entries only. Everything else in
     # this script is scoped to examples/ — `found` comes from `git ls-files examples`, the
     # stale check filters on the prefix — and applying them to the root cargo and
@@ -186,6 +195,8 @@ for update in config["updates"]:
         problems.append(f"{where}: needs `open-pull-requests-limit: 0`, or version "
                         "updates come back on for it.")
 
+    prefix = (update.get("commit-message") or {}).get("prefix")
+
     # `patterns` is the other half of the grouping claim: a group with
     # patterns: ["lodash"] satisfies the applies-to assertion above while leaving every
     # other advisory for that example ungrouped, which is the state this file exists to
@@ -206,8 +217,20 @@ for update in config["updates"]:
             # that, so the next example could reintroduce it — headroom is 11 characters
             # at the longest directory configured today.
             for directory in directories:
-                header = (f"chore(deps): bump the {group_name} group in {directory} "
-                          "with 5 updates")
+                # Built from this entry's own prefix, and deliberately pessimistic in two
+                # ways: it assumes the `(deps)` scope and a three-digit update count.
+                #
+                # The scope is why this reads 6 characters longer than the 137 the comment
+                # above cites, which was measured without it. Dependabot infers a
+                # conventional-commit scope from history — every existing Dependabot pull
+                # request here is titled `chore(deps): ...` — and an explicit prefix
+                # without `include: scope` should drop it, but being wrong in the strict
+                # direction costs a shortened group name, while being wrong in the lax
+                # direction costs a red Commit Lint on a pull request nobody wrote, weeks
+                # later. That is the whole point of this assertion. It still leaves 9
+                # characters of headroom at the longest directory configured today.
+                header = (f"{prefix or 'chore'}(deps): bump the {group_name} group in "
+                          f"{directory} with 100 updates")
                 if len(header) > COMMITLINT_HEADER_MAX:
                     problems.append(
                         f"{where}: group {group_name!r} makes a "
@@ -226,7 +249,6 @@ for update in config["updates"]:
     # list comes back empty and the assertion falls back to "a prefix is set", which is
     # the part that matters; a wrong-but-present prefix would then be caught by Commit
     # Lint on the pull request that adds the entry.
-    prefix = (update.get("commit-message") or {}).get("prefix")
     if not prefix:
         problems.append(f"{where}: needs `commit-message.prefix`, or Commit Lint rejects "
                         "the header Dependabot generates.")

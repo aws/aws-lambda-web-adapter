@@ -46,6 +46,7 @@ fi
 # jobs would run and die in fromJSON('') with an error unrelated to the real cause.
 emit_all() {
   local kind matrix
+  echo "selected=$(jq -r '[.[][] | .name] | sort | join(", ")' "$MATRIX")" >>"$GITHUB_OUTPUT"
   for kind in "${KINDS[@]}"; do
     # `has` rather than a bare `.$kind`: jq prints the literal `null` and exits 0 for a
     # missing key, so a renamed top-level key in the matrix file wrote `stream=null`,
@@ -127,6 +128,7 @@ if [[ -z "$example_paths" ]]; then
   for kind in "${KINDS[@]}"; do
     echo "$kind=[]" >>"$GITHUB_OUTPUT"
   done
+  echo "selected=" >>"$GITHUB_OUTPUT"
   exit 0
 fi
 
@@ -139,8 +141,12 @@ echo "Changed examples: $names"
 # say it out loud: a reviewer reading one green aggregate check cannot otherwise tell
 # that the bump they are approving was never launched, because the per-example job names
 # disappear when the matrix is filtered.
+# `.[][]` rather than naming the kinds: this is the reviewer's only signal that a bump
+# was not built or booted, so a stale kind list here would claim an example is unverified
+# while a new job is in fact verifying it — a false statement in the one place someone
+# reads. Same reason KINDS is derived above.
 uncovered="$(jq -r --argjson names "$names" \
-  '([.image, .zip, .stream] | flatten | map(.name)) as $covered
+  '[.[][] | .name] as $covered
    | [$names[] | select(IN($covered[]) | not)] | join(", ")' "$MATRIX")"
 if [[ -n "$uncovered" ]]; then
   echo "::warning::No matrix entry builds or boots: $uncovered — this run verifies templates only for them."
@@ -149,6 +155,13 @@ if [[ -n "$uncovered" ]]; then
       >>"$GITHUB_STEP_SUMMARY"
   fi
 fi
+
+# One kind-agnostic list of what was selected, so examples-verified can report it without
+# binding the kinds a third time.
+selected="$(jq -r --argjson names "$names" \
+  '[.[][] | .name] as $covered | [$names[] | select(IN($covered[]))] | sort | join(", ")' \
+  "$MATRIX")"
+echo "selected=$selected" >>"$GITHUB_OUTPUT"
 
 for kind in "${KINDS[@]}"; do
   # Same has() assertion as emit_all: without it a renamed top-level key fails here with
