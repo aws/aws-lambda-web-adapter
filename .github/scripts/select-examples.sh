@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+#
+# Picks which examples the Verify Examples workflow needs to run, and writes one
+# matrix per job kind (image, zip, stream) to $GITHUB_OUTPUT.
+#
+# A dependency bump under examples/remix/remix-app has no bearing on springboot or
+# deno-zip, so verifying all 18 matrix entries for it burns runners for no signal.
+# With ~70 open Dependabot PRs against the examples that cost dominates CI.
+#
+# Three outcomes, in order of confidence:
+#
+#   verify everything — no base commit (a push or a manual run), a base commit this
+#     clone does not have, or a change to a shared input every example is built against.
+#   verify the examples in the diff — the normal pull request case.
+#   verify nothing — the diff is empty, or touches nothing under examples/. The
+#     `if: ... != '[]'` guards in examples.yaml skip the test jobs, and examples-verified
+#     treats a skipped job as a pass, so the workflow is green with nothing to run.
+#
+# The diff base comes from the merge ref's first parent, not from BASE_SHA, for the
+# reason recorded below.
+#
+# Inputs:
+#   BASE_SHA       base commit from the event payload; empty means "verify everything".
+#                  Only used when HEAD is not a merge ref.
+#   GITHUB_OUTPUT  set by Actions
+set -euo pipefail
+
+MATRIX="$(dirname "$0")/../example-matrix.json"
+
+# The kinds come from the matrix file, not from three hardcoded lists. Adding a fourth job
+# and its matrix key while forgetting one of those lists wrote no output line for it at
+# all, and `!= '[]'` is true for the empty string — so the job would start and die in
+# fromJSON(''), which is the failure this file's emit_all comment describes. The guard
+# asserts the other direction (a kind a job reads must exist in the file), so between them
+# every key gets a line and every line has a consumer.
+mapfile -t KINDS < <(jq -r 'keys_unsorted[]' "$MATRIX")
+if [[ ${#KINDS[@]} -eq 0 ]]; then
+  echo "No kinds in $MATRIX; refusing to emit an empty selection." >&2
+  exit 1
+fi
+
+# Assign before echoing, so a jq failure is the command's status rather than an
+# argument to echo: `echo "x=$(jq ...)"` returns echo's 0 even when jq dies, and
+# set -e never fires. That wrote `image=` to $GITHUB_OUTPUT and reported success — and
+# an empty value is worse than a failure, because `!= '[]'` is true for it, so the test
+# jobs would run and die in fromJSON('') with an error unrelated to the real cause.
+emit_all() {
+  local kind matrix
+  echo "selected=$(jq -r '[.[][] | .name] | sort | join(", ")' "$MATRIX")" >>"$GITHUB_OUTPUT"
+  for kind in "${KINDS[@]}"; do
+    # `has` rather than a bare `.$kind`: jq prints the literal `null` and exits 0 for a
+    # missing key, so a renamed top-level key in the matrix file wrote `stream=null`,
+    # which `!= '[]'` reads as truthy — test-stream would start and die in
+    # fromJSON('null') complaining about the workflow instead of the matrix file. The
+    # selection loop at the bottom already fails loudly here, because `.$kind[]` over
+    # null is a jq error; this is the path every push to main takes.
+    matrix="$(jq -ce --arg kind "$kind" \
+      'if has($kind) then .[$kind] else error("example-matrix.json has no \"" + $kind + "\" key") end' \
+      "$MATRIX")"
+    echo "$kind=$matrix" >>"$GITHUB_OUTPUT"
+  done
+}
+
+if [[ -z "${BASE_SHA:-}" ]]; then
+  echo "No base commit (push or manual run): verifying every example."
+  emit_all
+  exit 0
+fi
+
+# HEAD is refs/pull/N/merge, so its first parent is the base tip the merge was computed
+# against and its second is the pull request head. HEAD^1..HEAD is therefore exactly the
+# pull request's contribution.
+#
+# Not merge-base with BASE_SHA: that comes from the event payload and can be older than
+# the tip the merge ref was recomputed against, in which case merge-base returns
+# BASE_SHA itself and the diff also picks up everything that landed on main in between.
+# One intervening commit under src/ then trips the shared-path rule below and verifies
+# all eighteen examples — measured on a real merge commit here, one file becomes five.
+# It over-selects rather than under-selects, so it is a cost rather than a hole, but
+# re-running an older pull request is routine enough to be worth avoiding.
+if git rev-parse --verify --quiet HEAD^2 >/dev/null; then
+  base="$(git rev-parse HEAD^1)"
+elif git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+  base="$(git merge-base "$BASE_SHA" HEAD)"
+else
+  # Only reachable when HEAD is not a merge ref and the payload's base is not in this
+  # clone — a shallow fetch, or a fork whose base was never fetched.
+  echo "Base commit $BASE_SHA is not available locally: verifying every example."
+  emit_all
+  exit 0
+fi
+# --no-renames: rename detection is on by default and prints only the destination, so
+# `git mv examples/fasthtml/app/main.py examples/fasthtml-zip/app/main.py` reported the
+# destination alone — fasthtml was never selected, its matrix entry never ran, and the
+# aggregate went green while the example had lost its app file. Reproduced in a scratch
+# repository: default output one path, --no-renames output both.
+changed="$(git diff --no-renames --name-only "$base" HEAD)"
+echo "Changed files:"
+echo "$changed" | sed 's/^/  /'
+
+# Shared inputs every example is built against: the adapter itself, the layer wrapper,
+# this workflow, and the two scripts every test job actually runs.
+#
+# Named individually rather than as .github/scripts/, which also holds
+# check-example-config.sh — which no example is built against, so matching the whole
+# directory would rebuild and boot all eighteen entries for a change to it.
+if grep -qE '^(src/|layer/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/examples\.yaml$|\.github/scripts/verify-http\.sh$|\.github/scripts/select-examples\.sh$|\.github/example-matrix\.json$)' <<<"$changed"; then
+  echo "A shared path changed: verifying every example."
+  emit_all
+  exit 0
+fi
+
+# examples/<name>/... -> <name>. grep exits 1 when nothing matches, which pipefail
+# would turn into an unexplained failure of this script — so tolerate that one status,
+# and only that one, by keeping grep out of the pipeline below.
+# The trailing slash matters: without it a file sitting directly under examples/ (a
+# README, say) matches and becomes a phantom example name, producing empty matrices and a
+# spurious "no matrix entry builds or boots: README.md" warning. There is no such file
+# today, so this is latent.
+example_paths="$(grep -oE '^examples/[^/]+/' <<<"$changed" || true)"
+
+# Reachable with an empty diff: a stale pull request whose change already landed
+# through a duplicate (#804 and #811 carry an identical update set), or a re-run after
+# the commit merged. "Select nothing" is the documented contract here, not "fail" — the
+# `if: ... != '[]'` guards in examples.yaml skip the test jobs and the workflow is green.
+if [[ -z "$example_paths" ]]; then
+  echo "No example changed: nothing to verify."
+  for kind in "${KINDS[@]}"; do
+    echo "$kind=[]" >>"$GITHUB_OUTPUT"
+  done
+  echo "selected=" >>"$GITHUB_OUTPUT"
+  exit 0
+fi
+
+names="$(cut -d/ -f2 <<<"$example_paths" | sort -u | jq -R . | jq -sc .)"
+echo "Changed examples: $names"
+
+# The matrix covers 18 of the ~46 examples dependabot.yml claims, so for most Dependabot
+# pull requests every matrix comes out empty and examples-verified goes green having
+# built and booted nothing. Failing instead would block those examples permanently, so
+# say it out loud: a reviewer reading one green aggregate check cannot otherwise tell
+# that the bump they are approving was never launched, because the per-example job names
+# disappear when the matrix is filtered.
+# `.[][]` rather than naming the kinds: this is the reviewer's only signal that a bump
+# was not built or booted, so a stale kind list here would claim an example is unverified
+# while a new job is in fact verifying it — a false statement in the one place someone
+# reads. Same reason KINDS is derived above.
+uncovered="$(jq -r --argjson names "$names" \
+  '[.[][] | .name] as $covered
+   | [$names[] | select(IN($covered[]) | not)] | join(", ")' "$MATRIX")"
+if [[ -n "$uncovered" ]]; then
+  echo "::warning::No matrix entry builds or boots: $uncovered — this run verifies templates only for them."
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    echo "- **Not built or booted:** $uncovered (no \`.github/example-matrix.json\` entry)" \
+      >>"$GITHUB_STEP_SUMMARY"
+  fi
+fi
+
+# One kind-agnostic list of what was selected, so examples-verified can report it without
+# binding the kinds a third time.
+selected="$(jq -r --argjson names "$names" \
+  '[.[][] | .name] as $covered | [$names[] | select(IN($covered[]))] | sort | join(", ")' \
+  "$MATRIX")"
+echo "selected=$selected" >>"$GITHUB_OUTPUT"
+
+for kind in "${KINDS[@]}"; do
+  # Same has() assertion as emit_all: without it a renamed top-level key fails here with
+  # jq's bare "Cannot iterate over null", naming neither the file nor the key, while the
+  # push path says which key is missing. Loud is not the same as diagnostic.
+  matrix="$(jq -c --argjson names "$names" --arg kind "$kind" \
+    'if has($kind) | not then error("example-matrix.json has no \"" + $kind + "\" key") else
+       [.[$kind][] | select(.name as $n | $names | index($n))] end' "$MATRIX")"
+  echo "$kind=$matrix"
+  echo "$kind=$matrix" >>"$GITHUB_OUTPUT"
+done

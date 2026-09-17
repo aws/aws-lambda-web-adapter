@@ -6,11 +6,49 @@ on:
       - main
     paths:
       - "examples/**"
+      # This workflow's own machinery. The matrix file and the selector decide what
+      # gets verified at all, so a pull request that changes only those would
+      # otherwise not run here — and a malformed matrix or a selector regression
+      # would land unverified and surface later on an unrelated examples pull
+      # request. Including them makes the workflow verify its own changes.
+      - ".github/workflows/examples.yaml"
+      - ".github/scripts/select-examples.sh"
+      - ".github/scripts/verify-http.sh"
+      - ".github/scripts/check-example-config.sh"
+      - ".github/example-matrix.json"
+      - ".github/dependabot.yml"
+      # check-example-config.sh parses type-enum and header-max-length out of this file
+      # and asserts every entry's generated commit header against them, so a change to it
+      # has to re-run that assertion. Lowering header-max-length otherwise passes on the
+      # pull request that makes the change — pr.yaml and commitlint.yaml run, neither
+      # invokes the guard — and the bill arrives weeks later as a red Commit Lint on a
+      # Dependabot pull request nobody wrote. Headroom is ~12 characters today. It costs
+      # nothing: the selector does not treat it as a shared input, so such a pull request
+      # selects no examples and only validate does work.
+      - "commitlint.config.js"
   push:
     branches:
       - main
+    # Every input select-examples.sh treats as shared, not just src/. layer/bootstrap in
+    # particular is the code path all eight zip examples boot — build-layer copies it
+    # into the artifact each of them injects — so leaving it out meant a regression there
+    # was verified by nothing at all.
     paths:
       - "src/**"
+      - "layer/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  # Those same paths are deliberately NOT pull request triggers: adding them would run
+  # all eighteen matrix entries on every source pull request. Adapter changes are
+  # verified against the examples on push to main (above), and the selector's shared-path
+  # rule still applies to a pull request that touches both source and examples.
+  #
+  # The push list is deliberately shorter than the selector's shared-input set, which also
+  # names this workflow, verify-http.sh and the matrix file. Those three are pull request
+  # triggers, so a change to any of them already fans out to all eighteen entries before it
+  # lands; repeating them here would only re-run on main what the pull request just ran.
+  # The two lists answer different questions — what starts a run, versus what forces a run
+  # to cover everything.
   workflow_dispatch:
 
 permissions:
@@ -20,6 +58,31 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Narrows the test matrices to the examples a pull request actually touches, so a
+  # dependency bump in one example does not rebuild and boot all eighteen. Any change
+  # to shared code (src/, layer/, this workflow) still verifies everything. See
+  # .github/scripts/select-examples.sh.
+  select:
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+      zip: ${{ steps.filter.outputs.zip }}
+      stream: ${{ steps.filter.outputs.stream }}
+      # Every selected example name, kind-agnostic, so examples-verified can say what it
+      # verified without binding each kind again.
+      selected: ${{ steps.filter.outputs.selected }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needed to diff against the base commit rather than a shallow clone.
+          fetch-depth: 0
+
+      - name: Select the examples to verify
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: .github/scripts/select-examples.sh
+
   validate:
     runs-on: ubuntu-24.04
     steps:
@@ -34,10 +97,24 @@ jobs:
           use-installer: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The two hand-maintained lists describing the examples drift silently otherwise:
+      # an unclaimed manifest reverts to one Dependabot pull request per advisory with a
+      # commit header Commit Lint rejects, and that is invisible until the pull requests
+      # appear weeks later.
+      - name: Check the example config lists against the tree
+        run: |
+          pip install pyyaml --quiet
+          .github/scripts/check-example-config.sh
+
       - name: Validate all SAM templates
         run: |
           failed=0
-          for template in $(find examples -maxdepth 2 -name "template.yaml" | sort); do
+          # Both spellings: examples/sinatra and examples/go-http-zip use template.yml,
+          # so a .yaml-only find left them unlinted while examples-verified still claimed
+          # "template validation only" for them — and both have Dependabot entries and no
+          # matrix entry, so that claim is the only thing their pull requests get.
+          for template in $(find examples -maxdepth 2 \
+            \( -name "template.yaml" -o -name "template.yml" \) | sort); do
             dir=$(dirname "$template")
             echo "Validating $dir..."
             if ! sam validate --template "$template" --lint 2>&1; then
@@ -50,7 +127,14 @@ jobs:
             exit 1
           fi
 
+  # Only when something will use it. The artifact exists for the test jobs, so building
+  # it when `select` chose nothing is several minutes of runner time for nobody.
   build-layer:
+    needs: [select]
+    if: >-
+      needs.select.outputs.image != '[]' ||
+      needs.select.outputs.zip != '[]' ||
+      needs.select.outputs.stream != '[]'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -82,20 +166,13 @@ jobs:
   # Excluded: nginx, flask, aspnet-mvc (web app hardcodes port 8080
   # which conflicts with SAM's Lambda Runtime Interface Emulator).
   test-image:
-    needs: [build-layer]
+    needs: [select, build-layer]
+    if: needs.select.outputs.image != '[]'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        example:
-          - { name: expressjs, path: /, expect_body: "Hi there!" }
-          - { name: fastapi, path: /, expect_body: "message" }
-          - { name: fastapi-background-tasks, path: /, expect_body: "message" }
-          - { name: fasthtml, path: /, expect_body: "Hello World" }
-          - { name: gin, path: /, expect_body: "message" }
-          - { name: nextjs, path: /, expect_body: "Next.js Logo" }
-          - { name: remix, path: /, expect_body: "Welcome to" }
-          - { name: springboot, path: /v1/, expect_body: "Hello, world!" }
+        example: ${{ fromJSON(needs.select.outputs.image) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -178,20 +255,13 @@ jobs:
   # bun/nginx (need third-party layers), arm64 examples (javalin, rust-*),
   # nextjs-zip (Makefile produces a zip artifact incompatible with sam local).
   test-zip:
-    needs: [build-layer]
+    needs: [select, build-layer]
+    if: needs.select.outputs.zip != '[]'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        example:
-          - { name: deno-zip, path: /, expect_body: "success", port: "8000" }
-          - { name: expressjs-zip, path: /, expect_body: "Hi there!", port: "8000" }
-          - { name: fastapi-zip, path: /, expect_body: "message", port: "8000" }
-          - { name: fasthtml-zip, path: /, expect_body: "Hello World", port: "8000" }
-          - { name: flask-zip, path: /, expect_body: "message", port: "8000" }
-          - { name: gin-zip, path: /, expect_body: "message", port: "8000" }
-          - { name: remix-zip, path: /, expect_body: "Welcome to", port: "8000" }
-          - { name: springboot-zip, path: /v1/, expect_body: "Hello, world!", port: "8000" }
+        example: ${{ fromJSON(needs.select.outputs.zip) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -296,14 +366,13 @@ jobs:
   # AWS_REGION is set so boto3 / AnthropicBedrock clients construct without real
   # creds; the verified routes only render UI and never call Bedrock.
   test-stream:
-    needs: [build-layer]
+    needs: [select, build-layer]
+    if: needs.select.outputs.stream != '[]'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        example:
-          - { name: fasthtml-response-streaming, kind: image, path: /, expect_body: "Serverless Bedtime" }
-          - { name: fasthtml-response-streaming-zip, kind: zip-fasthtml, path: /, expect_body: "Click to stream" }
+        example: ${{ fromJSON(needs.select.outputs.stream) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -366,3 +435,50 @@ jobs:
         run: |
           docker rm -f stream-app 2>/dev/null || true
           kill $APP_PID 2>/dev/null || true
+
+  # One aggregate result for the whole workflow, so a reviewer has a single thing to look
+  # at before merging: the matrix jobs' names embed their parameters
+  # ("test-zip (deno-zip, /, success, 8000)") and vanish entirely when `select` filters an
+  # example out, so there is no stable per-example name to read.
+  #
+  # `skipped` counts as a pass — that is what a filtered-out matrix means. `failure`
+  # and `cancelled` do not.
+  #
+  # Note if you ever make this a required check in main's ruleset: this workflow is
+  # path-filtered, so it never runs on a pull request that touches none of those paths and
+  # the check would never report there, blocking that pull request indefinitely. Making it
+  # required needs a companion job reporting the same name on the complementary paths.
+  examples-verified:
+    if: always()
+    needs: [select, validate, build-layer, test-image, test-zip, test-stream]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the verification results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          SELECTED: ${{ needs.select.outputs.selected }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "A verification job reported '$result'."
+                exit 1
+                ;;
+            esac
+          done
+
+          # Green is not the same claim in both cases. Most examples have no matrix entry,
+          # so their pull requests filter every matrix to empty, skip the test jobs, and
+          # arrive here green having built and booted nothing. Say which it was, because a
+          # reviewer reading this one check has nothing else to go on — the per-example job
+          # names vanish when the matrix is filtered, which is why this job exists.
+          if [[ -n "${SELECTED:-}" ]]; then
+            echo "Built and booted: $SELECTED"
+            echo "**Verified:** $SELECTED" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "No example was built or booted; this run verified templates only."
+            echo "**No example was built or booted** — template validation only." \
+              >>"$GITHUB_STEP_SUMMARY"
+          fi

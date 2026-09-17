@@ -1,0 +1,26 @@
+{
+  "image": [
+    { "name": "expressjs", "path": "/", "expect_body": "Hi there!" },
+    { "name": "fastapi", "path": "/", "expect_body": "message" },
+    { "name": "fastapi-background-tasks", "path": "/", "expect_body": "message" },
+    { "name": "fasthtml", "path": "/", "expect_body": "Hello World" },
+    { "name": "gin", "path": "/", "expect_body": "message" },
+    { "name": "nextjs", "path": "/", "expect_body": "Next.js Logo" },
+    { "name": "remix", "path": "/", "expect_body": "Welcome to" },
+    { "name": "springboot", "path": "/v1/", "expect_body": "Hello, world!" }
+  ],
+  "zip": [
+    { "name": "deno-zip", "path": "/", "expect_body": "success", "port": "8000" },
+    { "name": "expressjs-zip", "path": "/", "expect_body": "Hi there!", "port": "8000" },
+    { "name": "fastapi-zip", "path": "/", "expect_body": "message", "port": "8000" },
+    { "name": "fasthtml-zip", "path": "/", "expect_body": "Hello World", "port": "8000" },
+    { "name": "flask-zip", "path": "/", "expect_body": "message", "port": "8000" },
+    { "name": "gin-zip", "path": "/", "expect_body": "message", "port": "8000" },
+    { "name": "remix-zip", "path": "/", "expect_body": "Welcome to", "port": "8000" },
+    { "name": "springboot-zip", "path": "/v1/", "expect_body": "Hello, world!", "port": "8000" }
+  ],
+  "stream": [
+    { "name": "fasthtml-response-streaming", "kind": "image", "path": "/", "expect_body": "Serverless Bedtime" },
+    { "name": "fasthtml-response-streaming-zip", "kind": "zip-fasthtml", "path": "/", "expect_body": "Click to stream" }
+  ]
+}
