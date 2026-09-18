@@ -39,14 +39,10 @@ Resources:
       Type: String
       Value: !Ref LambdaAdapterLayerX86
 
-  # A per-version parameter (/lambda-web-adapter/layer/x86_64/<CargoPkgVersion>) used
-  # to live here. It was removed: because CloudFormation replaces a parameter when its
-  # Name changes, and UpdateReplacePolicy was Retain, every version bump orphaned the
-  # previous name. Deploying a version whose name had already been orphaned — after the
-  # v1.1.0 revert, or on any re-release — then failed with AlreadyExists and wedged
-  # every merge to main. Existing per-version parameters are retained, and the layer's
-  # Description still records the version, so `aws lambda list-layer-versions` maps a
-  # version to its layer ARN.
+  # The version-named parameter (/lambda-web-adapter/layer/x86_64/<CargoPkgVersion>)
+  # is published after deployment with `aws ssm put-parameter --overwrite`. It cannot
+  # live in this stack: a Name change replaces the resource, while retaining old
+  # versions leaves names that CloudFormation collides with when a version is re-used.
 
 Outputs:
   LambdaAdapterLayerX86Arn:

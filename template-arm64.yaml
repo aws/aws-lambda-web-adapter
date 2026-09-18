@@ -39,10 +39,9 @@ Resources:
       Type: String
       Value: !Ref LambdaAdapterLayerArm64
 
-  # A per-version parameter (/lambda-web-adapter/layer/arm64/<CargoPkgVersion>) used to
-  # live here. See the matching comment in template-x86_64.yaml for why it was removed:
-  # a Name change replaces the parameter, and UpdateReplacePolicy: Retain orphaned the
-  # old name, so re-deploying an already-used version failed with AlreadyExists.
+  # The version-named parameter (/lambda-web-adapter/layer/arm64/<CargoPkgVersion>)
+  # is published after deployment with `aws ssm put-parameter --overwrite`. See the
+  # matching comment in template-x86_64.yaml for why it cannot live in this stack.
 
 Outputs:
   LambdaAdapterLayerArm64Arn:

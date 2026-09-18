@@ -428,6 +428,11 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix: ${{fromJSON(needs.load-matrices.outputs.gamma)}}
+    env:
+      # One definition each, used by the deploy and by the publish step
+      # below, so the two cannot drift apart in a copy-paste.
+      X86_STACK: lambda-adapter-gamma-x86-${{ matrix.region }}
+      ARM64_STACK: lambda-adapter-gamma-arm64-${{ matrix.region }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
@@ -464,7 +469,7 @@ jobs:
 
       - name: Deploy x86_64 Layer to all regions in gamma account
         run: |
-          sam deploy --stack-name lambda-adapter-gamma-x86-${{ matrix.region }} \
+          sam deploy --stack-name ${X86_STACK} \
             --template packaged-gamma-x86_64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -474,6 +479,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
+
       - uses: actions/download-artifact@v4
         with:
           name: packaged-gamma-arm64-${{ matrix.region }}.yaml
@@ -481,7 +487,7 @@ jobs:
       - name: Deploy arm64 Layer to supported regions in gamma account
         if: ${{ matrix.arm64_supported }}
         run: |
-          sam deploy --stack-name lambda-adapter-gamma-arm64-${{ matrix.region }} \
+          sam deploy --stack-name ${ARM64_STACK} \
             --template packaged-gamma-arm64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -491,12 +497,37 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
+      # Both deploys complete before either pointer is written, deliberately. These steps
+      # need ssm:PutParameter, granted to the PipelineExecutionRole by
+      # LambdaWebAdapterInfrastructureCDK (lib/infra-template.yaml,
+      # PipelineExecutionRolePermissions) — so a region whose pipeline-resources stack has
+      # not been updated with that grant fails here with AccessDenied. Ordered this way,
+      # that failure leaves both layers published and the version pointers stale; ordered
+      # between the deploys, it left the region with a new x86 layer and no arm64 one.
+      - name: Publish versioned x86_64 layer parameter
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$X86_STACK" \
+            x86_64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
+
+      - name: Publish versioned arm64 layer parameter
+        if: ${{ matrix.arm64_supported }}
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$ARM64_STACK" \
+            arm64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
+
   deploy-prod:
     needs: [load-matrices, deploy-gamma, package-prod]
     runs-on: ubuntu-24.04
     environment: prod
     strategy:
       matrix: ${{fromJSON(needs.load-matrices.outputs.prod)}}
+    env:
+      # One definition each, used by the deploy and by the publish step
+      # below, so the two cannot drift apart in a copy-paste.
+      X86_STACK: lambda-adapter-prod-x86-${{ matrix.region }}
+      ARM64_STACK: lambda-adapter-prod-arm64-${{ matrix.region }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
@@ -533,7 +564,7 @@ jobs:
 
       - name: Deploy x86_64 Layer to all regions in prod account
         run: |
-          sam deploy --stack-name lambda-adapter-prod-x86-${{ matrix.region }} \
+          sam deploy --stack-name ${X86_STACK} \
             --template packaged-prod-x86_64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -543,6 +574,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
+
       - uses: actions/download-artifact@v4
         with:
           name: packaged-prod-arm64-${{ matrix.region }}.yaml
@@ -550,7 +582,7 @@ jobs:
       - name: Deploy arm64 Layer to supported regions in prod account
         if: ${{ matrix.arm64_supported }}
         run: |
-          sam deploy --stack-name lambda-adapter-prod-arm64-${{ matrix.region }} \
+          sam deploy --stack-name ${ARM64_STACK} \
             --template packaged-prod-arm64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -560,11 +592,29 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
+      - name: Publish versioned x86_64 layer parameter
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$X86_STACK" \
+            x86_64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
+
+      - name: Publish versioned arm64 layer parameter
+        if: ${{ matrix.arm64_supported }}
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$ARM64_STACK" \
+            arm64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
+
   deploy-china-gamma:
     needs: [load-matrices, package-china-gamma]
     runs-on: ubuntu-24.04
     strategy:
       matrix: ${{fromJSON(needs.load-matrices.outputs.china-gamma)}}
+    env:
+      # One definition each, used by the deploy and by the publish step
+      # below, so the two cannot drift apart in a copy-paste.
+      X86_STACK: lambda-adapter-gamma-x86-${{ matrix.region }}
+      ARM64_STACK: lambda-adapter-gamma-arm64-${{ matrix.region }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
@@ -603,7 +653,7 @@ jobs:
 
       - name: Deploy x86_64 Layer to all regions in china
         run: |
-          sam deploy --stack-name lambda-adapter-gamma-x86-${{ matrix.region }} \
+          sam deploy --stack-name ${X86_STACK} \
             --template packaged-china-gamma-x86_64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -613,6 +663,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
+
       - uses: actions/download-artifact@v4
         with:
           name: packaged-china-gamma-arm64-${{ matrix.region }}.yaml
@@ -620,7 +671,7 @@ jobs:
       - name: Deploy arm64 Layer to supported china regions
         if: ${{ matrix.arm64_supported }}
         run: |
-          sam deploy --stack-name lambda-adapter-gamma-arm64-${{ matrix.region }} \
+          sam deploy --stack-name ${ARM64_STACK} \
             --template packaged-china-gamma-arm64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -630,12 +681,30 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
+      - name: Publish versioned x86_64 layer parameter
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$X86_STACK" \
+            x86_64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
+
+      - name: Publish versioned arm64 layer parameter
+        if: ${{ matrix.arm64_supported }}
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$ARM64_STACK" \
+            arm64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
+
   deploy-china-prod:
     needs: [load-matrices, deploy-china-gamma, package-china-prod]
     runs-on: ubuntu-24.04
     environment: prod
     strategy:
       matrix: ${{fromJSON(needs.load-matrices.outputs.china-prod)}}
+    env:
+      # One definition each, used by the deploy and by the publish step
+      # below, so the two cannot drift apart in a copy-paste.
+      X86_STACK: lambda-adapter-prod-x86-${{ matrix.region }}
+      ARM64_STACK: lambda-adapter-prod-arm64-${{ matrix.region }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
@@ -674,7 +743,7 @@ jobs:
 
       - name: Deploy x86_64 Layer to all regions in china
         run: |
-          sam deploy --stack-name lambda-adapter-prod-x86-${{ matrix.region }} \
+          sam deploy --stack-name ${X86_STACK} \
             --template packaged-china-prod-x86_64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -684,6 +753,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
 
+
       - uses: actions/download-artifact@v4
         with:
           name: packaged-china-prod-arm64-${{ matrix.region }}.yaml
@@ -691,7 +761,7 @@ jobs:
       - name: Deploy arm64 Layer to supported china regions
         if: ${{ matrix.arm64_supported }}
         run: |
-          sam deploy --stack-name lambda-adapter-prod-arm64-${{ matrix.region }} \
+          sam deploy --stack-name ${ARM64_STACK} \
             --template packaged-china-prod-arm64-${{ matrix.region }}.yaml \
             --parameter-overrides CargoPkgVersion=${CARGO_PKG_VERSION} \
             --capabilities CAPABILITY_IAM \
@@ -700,6 +770,19 @@ jobs:
             --image-repository ${{ matrix.image_repository }} \
             --no-fail-on-empty-changeset \
             --role-arn ${{ matrix.cloudformation_execution_role }}
+
+      - name: Publish versioned x86_64 layer parameter
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$X86_STACK" \
+            x86_64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
+
+      - name: Publish versioned arm64 layer parameter
+        if: ${{ matrix.arm64_supported }}
+        run: |
+          .github/scripts/publish-layer-parameter.sh \
+            "$ARM64_STACK" \
+            arm64 "${CARGO_PKG_VERSION}" "${{ matrix.region }}"
 
   publish-to-public-ecr:
     needs: [deploy-prod]
