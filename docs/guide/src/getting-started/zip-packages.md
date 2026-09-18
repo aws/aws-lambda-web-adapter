@@ -10,15 +10,15 @@ AWS Lambda Web Adapter works with AWS managed Lambda runtimes via Lambda Layers.
 
 | Architecture | Layer ARN |
 |-------------|-----------|
-| x86_64 | `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28` |
-| arm64 | `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:28` |
+| x86_64 | `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30` |
+| arm64 | `arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:30` |
 
 #### AWS China Regions
 
 | Region | Architecture | Layer ARN |
 |--------|-------------|-----------|
-| cn-north-1 (Beijing) | x86_64 | `arn:aws-cn:lambda:cn-north-1:041581134020:layer:LambdaAdapterLayerX86:28` |
-| cn-northwest-1 (Ningxia) | x86_64 | `arn:aws-cn:lambda:cn-northwest-1:069767869989:layer:LambdaAdapterLayerX86:28` |
+| cn-north-1 (Beijing) | x86_64 | `arn:aws-cn:lambda:cn-north-1:041581134020:layer:LambdaAdapterLayerX86:30` |
+| cn-northwest-1 (Ningxia) | x86_64 | `arn:aws-cn:lambda:cn-northwest-1:069767869989:layer:LambdaAdapterLayerX86:30` |
 
 ### 2. Set the Exec Wrapper
 
@@ -42,7 +42,7 @@ Resources:
       Runtime: nodejs20.x
       Handler: run.sh
       Layers:
-        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:28
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30
       Environment:
         Variables:
           AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
