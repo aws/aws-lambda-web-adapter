@@ -1,4 +1,4 @@
-## Unreleased
+## v1.1.0 - 2026-09-18
 
 ### Features
 
