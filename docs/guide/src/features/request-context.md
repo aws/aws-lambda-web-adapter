@@ -4,7 +4,7 @@ Lambda Web Adapter forwards API Gateway request context and Lambda invocation co
 
 ## Request Context
 
-API Gateway sends metadata (requestId, requestTime, apiId, identity, authorizer) for each request. VPC Lattice also sends request context metadata. These contexts are forwarded in the `x-amzn-request-context` header as a JSON string.
+API Gateway sends metadata (requestId, requestTime, apiId, identity, authorizer) for each request. VPC Lattice event structure version V2 also sends request context metadata. These contexts are forwarded in the `x-amzn-request-context` header as a JSON string.
 
 The identity and authorizer fields are particularly useful for client authorization.
 
@@ -19,7 +19,7 @@ app.get('/', (req, res) => {
 
 See the [API Gateway docs](https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html#api-gateway-simple-proxy-for-lambda-input-format) for the full request context schema.
 
-For VPC Lattice, the adapter supports the V2 payload format and requires target-group configuration.
+For VPC Lattice, set the target group's Lambda event structure version to V2. The adapter supports the V2 payload format and forwards its request context. V1 events are treated as non-HTTP events and passed through to `AWS_LWA_PASS_THROUGH_PATH`, which defaults to `/events`.
 
 ## Lambda Context
 

@@ -702,16 +702,7 @@ fn test_http_event_request_context_classification() {
     let sqs_request = lambda_http::request::from_str(sqs_event).expect("Failed to deserialize SQS event");
     assert!(matches!(sqs_request.request_context(), RequestContext::PassThrough));
 
-    let api_gateway_v1_event = json!({
-        "httpMethod": "GET",
-        "path": "/health",
-        "requestContext": {
-            "requestId": "abcdef",
-            "stage": "prod",
-            "httpMethod": "GET"
-        }
-    })
-    .to_string();
+    let api_gateway_v1_event = include_str!("../../examples/fastapi/events/event.json");
     let api_gateway_v1_request =
         lambda_http::request::from_str(&api_gateway_v1_event).expect("Failed to deserialize API Gateway V1 event");
     assert!(matches!(
@@ -722,7 +713,8 @@ fn test_http_event_request_context_classification() {
     let alb_event = json!({
         "httpMethod": "GET",
         "path": "/health",
-        "headers": {"host": "example.com"},
+        "multiValueHeaders": {"host": ["example.com"]},
+        "multiValueQueryStringParameters": {"state": ["prod"]},
         "requestContext": {
             "elb": {
                 "targetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/example/abcdef"

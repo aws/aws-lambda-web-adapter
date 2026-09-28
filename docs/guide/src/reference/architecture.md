@@ -8,9 +8,10 @@ AWS Lambda Web Adapter is a Lambda Extension that bridges the gap between Lambda
 
 - Amazon API Gateway REST API
 - Amazon API Gateway HTTP API (v2 event format)
+- VPC Lattice (Lambda event structure version V2)
 - Application Load Balancer (ALB)
 - Lambda Function URLs
-- Non-HTTP triggers (SQS, SNS, S3, DynamoDB, Kinesis, Kafka, EventBridge, Bedrock Agents) via pass-through
+- Non-HTTP triggers (SQS, SNS, S3, DynamoDB, Kinesis, Kafka, EventBridge, Bedrock Agents, and VPC Lattice event structure version V1) via pass-through
 
 ## Request Flow
 
