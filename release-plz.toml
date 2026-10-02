@@ -1,0 +1,20 @@
+[workspace]
+# Reuse the existing git-cliff config so the changelog keeps its current style.
+changelog_config = "cliff.toml"
+
+# Match the existing tag scheme (v1.0.1, ...) so version detection works and the
+# tags stay compatible with release.yaml / the SAM templates.
+git_tag_name = "v{{ version }}"
+git_tag_enable = true
+
+# Create the GitHub Release as a full PUBLISHED release (not a draft), so that
+# release.yaml's `on: release: types: [released]` trigger fires.
+git_release_enable = true
+git_release_draft = false
+
+# Only cut a release when the Release PR is merged, not on every push to `main`.
+release_always = false
+
+# Publish lambda_web_adapter to crates.io.
+# Auth is provided by crates.io trusted publishing (OIDC) in release-plz.yml.
+publish = true
