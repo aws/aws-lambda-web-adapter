@@ -167,6 +167,7 @@ See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a c
 - [Remix](examples/remix/)
 - [Remix in Zip](examples/remix-zip/)
 - [Sveltekit SSR Zip](examples/sveltekit-ssr-zip/)
+- [Hono in Zip](examples/hono-zip)
 - [Datadog](examples/datadog)
 - [Datadog in Zip](examples/datadog-zip)
 
