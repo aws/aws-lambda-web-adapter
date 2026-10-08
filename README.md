@@ -28,10 +28,11 @@ The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local 
 
 ### Docker Images
 
-Add one line to your Dockerfile:
+Copy the adapter into your Dockerfile and identify the OS-only runtime to AWS SDKs:
 
 ```dockerfile
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
+ENV AWS_EXECUTION_ENV=AWS_Lambda_provided_custom
 ```
 
 Pre-compiled multi-arch images (x86_64 and arm64) are available at [public.ecr.aws/awsguru/aws-lambda-adapter](https://gallery.ecr.aws/awsguru/aws-lambda-adapter). [Non-AWS base images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html) may be used since the [Runtime Interface Client](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html#images-ric) ships with the Lambda Web Adapter.

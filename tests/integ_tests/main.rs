@@ -1389,3 +1389,44 @@ async fn test_no_tenant_id_header_when_absent() {
     endpoint.assert();
     assert_eq!(200, response.status());
 }
+
+#[test]
+fn test_layer_bootstrap_sets_execution_environment() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let task_root = std::env::temp_dir().join(format!("lambda-web-adapter-bootstrap-{}-{unique}", std::process::id()));
+    fs::create_dir(&task_root).unwrap();
+
+    let handler = task_root.join("handler");
+    fs::write(&handler, "#!/bin/sh\nprintf '%s' \"$AWS_EXECUTION_ENV\"\n").unwrap();
+    fs::set_permissions(&handler, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let bootstrap = concat!(env!("CARGO_MANIFEST_DIR"), "/layer/bootstrap");
+    let run = |execution_env: Option<&str>| {
+        let mut command = Command::new(bootstrap);
+        command.env("LAMBDA_TASK_ROOT", &task_root).env("_HANDLER", "handler");
+        match execution_env {
+            Some(value) => {
+                command.env("AWS_EXECUTION_ENV", value);
+            }
+            None => {
+                command.env_remove("AWS_EXECUTION_ENV");
+            }
+        }
+        command.output().unwrap()
+    };
+
+    let defaulted = run(None);
+    assert!(defaulted.status.success());
+    assert_eq!(defaulted.stdout, b"AWS_Lambda_provided_custom");
+
+    let configured = run(Some("customer-configured-value"));
+    assert!(configured.status.success());
+    assert_eq!(configured.stdout, b"customer-configured-value");
+
+    fs::remove_dir_all(task_root).unwrap();
+}
