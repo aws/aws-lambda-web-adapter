@@ -32,6 +32,8 @@ AWS_LAMBDA_EXEC_WRAPPER=/opt/bootstrap
 
 Set your function handler to your web application's startup script, e.g. `run.sh`.
 
+The layer bootstrap sets `AWS_EXECUTION_ENV` to `AWS_Lambda_provided_custom` when the variable is otherwise unset. This allows AWS SDK user agents to identify requests from OS-only Lambda runtimes. An explicitly configured value is preserved.
+
 ## SAM Template Example
 
 ```yaml

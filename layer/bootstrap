@@ -1,3 +1,8 @@
 #!/bin/bash
 
+# OS-only runtimes do not define AWS_EXECUTION_ENV. Set the standard custom-runtime
+# value so AWS SDK user agents can identify requests originating from Lambda, while
+# preserving a value explicitly configured by the customer.
+export AWS_EXECUTION_ENV="${AWS_EXECUTION_ENV:-AWS_Lambda_provided_custom}"
+
 exec -- "${LAMBDA_TASK_ROOT}/${_HANDLER}"
