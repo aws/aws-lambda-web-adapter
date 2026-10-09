@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  bun-hono
+
+  Sample SAM Template for bun-hono
+
+# More info about Globals: https://github.com/aws/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 10
+
+Resources:
+  BunHonoFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      MemorySize: 512
+      Architectures:
+        - x86_64
+      Events:
+        HttpEvents:
+          Type: HttpApi
+    Metadata:
+      DockerTag: v1
+      DockerContext: ./app
+      Dockerfile: Dockerfile
+
+Outputs:
+  BunHonoApi:
+    Description: "API Gateway endpoint URL for Bun Hono function"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/"

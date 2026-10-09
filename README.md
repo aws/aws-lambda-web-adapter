@@ -166,6 +166,7 @@ See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a c
 - [FastHTML with Response Streaming in Zip](examples/fasthtml-response-streaming-zip)
 - [Remix](examples/remix/)
 - [Remix in Zip](examples/remix-zip/)
+- [Bun Hono](examples/bun-hono)
 - [Sveltekit SSR Zip](examples/sveltekit-ssr-zip/)
 - [Datadog](examples/datadog)
 - [Datadog in Zip](examples/datadog-zip)
