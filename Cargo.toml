@@ -35,6 +35,7 @@ lambda_http = { version = "1.3.0", default-features = false, features = [
     "apigw_http",
     "apigw_rest",
     "alb",
+    "vpc_lattice",
     "pass_through",
     "tracing",
     "concurrency-tokio"
