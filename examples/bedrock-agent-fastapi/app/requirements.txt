@@ -3,7 +3,7 @@ anyio==4.6.2.post1
 boto3==1.35.63
 botocore==1.35.63
 fastapi==0.115.5
-idna==3.10
+idna==3.15
 jmespath==1.0.1
 lwa-fastapi-middleware-bedrock-agent==0.0.4
 pydantic==2.9.2
@@ -14,5 +14,5 @@ six==1.16.0
 sniffio==1.3.1
 starlette==1.3.1
 typing-extensions==4.12.2
-urllib3==2.2.3
+urllib3==2.7.0
 uvicorn==0.32.0
