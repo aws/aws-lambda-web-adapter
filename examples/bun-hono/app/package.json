@@ -1,0 +1,16 @@
+{
+  "name": "bun-hono",
+  "version": "1.0.0",
+  "description": "Hono on Bun example for AWS Lambda Web Adapter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.ts"
+  },
+  "dependencies": {
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2"
+  }
+}

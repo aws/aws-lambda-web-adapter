@@ -188,6 +188,17 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
+    directories: ["/examples/bun-hono/app"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
     directories: 
       - "/examples/datadog/expressjs-streaming/cdk"
       - "/examples/datadog/expressjs-streaming/lambda-asset/src"
