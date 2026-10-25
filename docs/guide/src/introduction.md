@@ -8,7 +8,7 @@ AWS Lambda Web Adapter lets developers build web apps with familiar frameworks (
 
 ## Key Features
 
-- Supports Amazon API Gateway (REST & HTTP API), Lambda Function URLs, and Application Load Balancer
+- Supports Amazon API Gateway (REST & HTTP API), VPC Lattice Lambda event structure version V2, Lambda Function URLs, and Application Load Balancer
 - Works with Lambda managed runtimes, custom runtimes, and Docker OCI images
 - Supports Lambda Managed Instances for multi-concurrent request handling
 - Framework and language agnostic — no new code dependencies
@@ -17,7 +17,7 @@ AWS Lambda Web Adapter lets developers build web apps with familiar frameworks (
 - Response payload compression (gzip/brotli)
 - Response streaming
 - Multi-tenancy via tenant ID propagation
-- Non-HTTP event trigger support (SQS, SNS, S3, DynamoDB, Kinesis, Kafka, EventBridge, Bedrock Agents)
+- Non-HTTP event trigger support (SQS, SNS, S3, DynamoDB, Kinesis, Kafka, EventBridge, Bedrock Agents, and VPC Lattice event structure version V1) via pass-through
 
 ## How It Works
 
