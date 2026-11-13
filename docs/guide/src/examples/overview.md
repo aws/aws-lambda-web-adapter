@@ -30,6 +30,7 @@ The repository includes working examples for many popular web frameworks, packag
 |---------|-----------|-----------|
 | [Express.js](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/expressjs) | Docker | No |
 | [Express.js in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/expressjs-zip) | Zip | No |
+| [Express.js in Zip with OpenTelemetry](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/expressjs-otel-zip) | Zip | No |
 | [Next.js](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/nextjs) | Docker | No |
 | [Next.js in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/nextjs-zip) | Zip | No |
 | [Next.js Response Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/nextjs-response-streaming) | Docker | Yes |

@@ -148,6 +148,7 @@ See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a c
 - [Serverless Django](https://github.com/aws-hebrew-book/serverless-django)  by [@efi-mk](https://github.com/efi-mk)
 - [Express.js](examples/expressjs)
 - [Express.js in Zip](examples/expressjs-zip)
+- [Express.js in Zip with OpenTelemetry](examples/expressjs-otel-zip)
 - [Next.js](examples/nextjs)
 - [Next.js in Zip](examples/nextjs-zip)
 - [Next.js Response Streaming](examples/nextjs-response-streaming)

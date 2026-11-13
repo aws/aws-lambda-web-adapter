@@ -1,0 +1,11 @@
+{
+  "name": "hello_world_otel",
+  "version": "1.0.0",
+  "description": "Express.js on Lambda Web Adapter with AWS Distro for OpenTelemetry tracing",
+  "main": "app.js",
+  "license": "MIT",
+  "dependencies": {
+    "@aws/aws-distro-opentelemetry-node-autoinstrumentation": "^0.13.0",
+    "express": "^4.21.2"
+  }
+}

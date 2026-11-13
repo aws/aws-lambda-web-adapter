@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  expressjs-otel-zip
+
+  Express.js on Lambda Web Adapter, traced with AWS Distro for OpenTelemetry (ADOT)
+
+Globals:
+  Function:
+    Timeout: 10
+
+Resources:
+  HelloWorldFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: hello-world/
+      Handler: run.sh
+      Runtime: nodejs22.x
+      MemorySize: 1024
+      Architectures:
+        - x86_64
+      # Active tracing turns on the X-Ray endpoint the ADOT SDK (from node_modules) exports
+      # spans to, and SAM adds the AWSXrayWriteOnlyAccess managed policy to the function role.
+      Tracing: Active
+      Environment:
+        Variables:
+          # Keep the adapter's wrapper. The OpenTelemetry options are set in run.sh.
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          RUST_LOG: info
+          # Listen on 8000 so the app doesn't collide with SAM's Runtime
+          # Interface Emulator on 8080 during local testing.
+          PORT: 8000
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30
+      Events:
+        RootPath:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+        AnyPath:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  HelloWorldApi:
+    Description: "API Gateway endpoint URL for Prod stage for Hello World function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/"
+  HelloWorldFunction:
+    Description: "Hello World Lambda Function ARN"
+    Value: !GetAtt HelloWorldFunction.Arn
+  HelloWorldFunctionIamRole:
+    Description: "Implicit IAM Role created for Hello World function"
+    Value: !GetAtt HelloWorldFunctionRole.Arn
