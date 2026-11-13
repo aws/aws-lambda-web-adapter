@@ -239,6 +239,17 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
   - package-ecosystem: npm
+    directories: ["/examples/hono-zip/app"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: chore
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
     directories: ["/examples/nextjs/app"]
     schedule:
       interval: weekly
