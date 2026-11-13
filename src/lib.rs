@@ -1600,7 +1600,10 @@ impl Adapter<HttpConnector, Body> {
             HeaderValue::from_bytes(&strip_forbidden_header_bytes(&serde_json::to_string(&lambda_context)?))?,
         );
 
-        // Multi-tenancy support: propagate tenant_id from Lambda context
+        // Multi-tenancy support: propagate tenant_id from Lambda context.
+        // The adapter asserts this header, so a client-supplied copy is always dropped
+        // first -- the same way the two context headers above are unconditionally set.
+        req_headers.remove(HeaderName::from_static("x-amz-tenant-id"));
         if let Some(ref tenant_id) = lambda_context.tenant_id {
             if let Ok(value) = HeaderValue::from_str(tenant_id) {
                 req_headers.insert(HeaderName::from_static("x-amz-tenant-id"), value);
@@ -2506,14 +2509,65 @@ mod tests {
 
         let adapter = Adapter::new(&options).expect("Failed to create adapter");
 
+        // The caller sets the header too. The app must still not see one: the adapter
+        // asserts this header, so a client-supplied value is never passed through.
         let alb_req = lambda_http::request::LambdaRequest::Alb({
             let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
             req.http_method = Method::GET;
             req.path = Some("/hello".into());
+            req.headers
+                .insert("x-amz-tenant-id", "client-supplied".parse().unwrap());
             req
         });
         let mut request = Request::from(alb_req);
         request.extensions_mut().insert(make_lambda_context(None));
+
+        let response = adapter.fetch_response(request).await.expect("Request failed");
+        assert_eq!(200, response.status().as_u16());
+    }
+
+    #[tokio::test]
+    async fn test_context_tenant_id_wins_over_client_supplied_header() {
+        let app_server = MockServer::start();
+        app_server.mock(|when, then| {
+            // This does NOT guard the `remove` call above: on the `Some` path `insert`
+            // already drops every prior value, so the app sees only the context tenant
+            // either way. `test_tenant_id_header_absent_when_no_tenant` is the test that
+            // fails without it. What this pins is precedence -- the context value is the
+            // ONLY value forwarded -- so asserting the complete value set keeps it honest
+            // if `insert` ever becomes `append`.
+            when.method(GET).path("/hello").is_true(|req| {
+                req.headers()
+                    .iter()
+                    .filter(|(k, _)| k.as_str() == "x-amz-tenant-id")
+                    .map(|(_, v)| v.to_str().unwrap_or_default())
+                    .eq(["tenant-from-context"])
+            });
+            then.status(200).body("OK");
+        });
+
+        let options = AdapterOptions {
+            host: app_server.host(),
+            port: app_server.port().to_string(),
+            readiness_check_port: app_server.port().to_string(),
+            readiness_check_path: "/".to_string(),
+            ..Default::default()
+        };
+
+        let adapter = Adapter::new(&options).expect("Failed to create adapter");
+
+        let alb_req = lambda_http::request::LambdaRequest::Alb({
+            let mut req = lambda_http::aws_lambda_events::alb::AlbTargetGroupRequest::default();
+            req.http_method = Method::GET;
+            req.path = Some("/hello".into());
+            req.headers
+                .insert("x-amz-tenant-id", "client-supplied".parse().unwrap());
+            req
+        });
+        let mut request = Request::from(alb_req);
+        request
+            .extensions_mut()
+            .insert(make_lambda_context(Some("tenant-from-context")));
 
         let response = adapter.fetch_response(request).await.expect("Request failed");
         assert_eq!(200, response.status().as_u16());
