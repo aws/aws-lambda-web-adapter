@@ -2,6 +2,15 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: FastAPI response streaming with Lambda Managed Instances
 
+# Template-level because Outputs cannot carry Metadata. E6101 trips on the
+# CapacityProviderArn output for the same cfn-lint schema gap noted on
+# FastAPIFunction below. Remove both ignores once cfn-lint ships the attribute.
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E6101
+
 Parameters:
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
@@ -28,6 +37,14 @@ Resources:
 
   FastAPIFunction:
     Type: AWS::Serverless::Function
+    # cfn-lint's bundled SAM schema for AWS::Serverless::CapacityProvider declares no
+    # attributes, so !GetAtt LMICapacityProvider.Arn fails E1010 even though SAM
+    # supports it. Remove once cfn-lint ships the attribute (checked on 1.58.0).
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1010
     Properties:
       CodeUri: app/
       Handler: run.sh
