@@ -1,5 +1,5 @@
 annotated-types==0.7.0
-anyio==4.6.2.post1
+anyio==4.14.2
 fastapi==0.115.5
 idna==3.15
 pydantic==2.9.2
