@@ -22,11 +22,11 @@
     "eslint": "8.37.0",
     "eslint-config-next": "14.2.2",
     "ms": "3.0.0-canary.1",
-    "next": "14.2.10",
+    "next": "15.5.24",
     "postcss": "8.5.10",
     "react": "18.2.0",
     "react-dom": "18.2.0",
-    "sharp": "^0.35.0",
+    "sharp": "^0.35.5",
     "tailwindcss": "3.3.1",
     "typescript": "5.0.3"
   },
