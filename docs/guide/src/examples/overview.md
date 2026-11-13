@@ -37,6 +37,7 @@ The repository includes working examples for many popular web frameworks, packag
 | [Remix](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/remix) | Docker | No |
 | [Remix in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/remix-zip) | Zip | No |
 | [SvelteKit SSR Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/sveltekit-ssr-zip) | Zip | No |
+| [Hono in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/hono-zip) | Zip | No |
 | [Bun GraphQL](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/bun-graphql-zip) | Zip | No |
 | [Bun GraphQL Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/bun-graphql-streaming-zip) | Zip | Yes |
 
