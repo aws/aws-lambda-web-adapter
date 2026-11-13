@@ -12,7 +12,9 @@ background_task = BackgroundTaskExtension()
 @app.middleware("http")
 async def send_done_message(request, call_next):
     response = await call_next(request)
-    background_task.done()
+    # only Lambda invokes carry this header; skip readiness checks
+    if "x-amzn-lambda-context" in request.headers:
+        background_task.done()
     return response
 
 def mock_task(seconds):
