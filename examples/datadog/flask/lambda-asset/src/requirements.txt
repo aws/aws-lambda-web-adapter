@@ -1,2 +1,2 @@
 ddtrace==4.8.2
-flask==3.1.0
+flask==3.1.3
