@@ -5,14 +5,6 @@ Description: >
 
   Express.js on Lambda Web Adapter, traced with AWS Distro for OpenTelemetry (ADOT)
 
-Parameters:
-  AdotLayerArn:
-    Type: String
-    Description: >
-      ADOT Node.js Lambda layer (AWSOpenTelemetryDistroJs) for your Region. The AWS account
-      ID and version differ by Region; see the README for the table.
-    AllowedPattern: ^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:layer:AWSOpenTelemetryDistroJs:\d+$
-
 Globals:
   Function:
     Timeout: 10
@@ -27,8 +19,8 @@ Resources:
       MemorySize: 1024
       Architectures:
         - x86_64
-      # Active tracing turns on the X-Ray endpoint the ADOT SDK exports spans to, and
-      # SAM adds the AWSXrayWriteOnlyAccess managed policy to the function role.
+      # Active tracing turns on the X-Ray endpoint the ADOT SDK (from node_modules) exports
+      # spans to, and SAM adds the AWSXrayWriteOnlyAccess managed policy to the function role.
       Tracing: Active
       Environment:
         Variables:
@@ -40,7 +32,6 @@ Resources:
           PORT: 8000
       Layers:
         - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30
-        - !Ref AdotLayerArn
       Events:
         RootPath:
           Type: Api
