@@ -11,13 +11,14 @@ AWS Lambda Web Adapter works with Lambda functions packaged as both Docker image
 
 ## Minimal Example (Docker)
 
-Add one line to your existing Dockerfile:
+Copy the adapter into your existing Dockerfile and identify the OS-only runtime to AWS SDKs:
 
 ```dockerfile
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
+ENV AWS_EXECUTION_ENV=AWS_Lambda_provided_custom
 ```
 
-That's it. Your web app now runs on Lambda.
+Your web app can now run on Lambda, and AWS SDK user agents can identify Lambda as its execution environment.
 
 ## Minimal Example (Zip)
 
