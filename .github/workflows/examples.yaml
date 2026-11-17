@@ -127,6 +127,64 @@ jobs:
             exit 1
           fi
 
+  # Resolve every changed examples/**/requirements.txt with pip, so a pin set that cannot
+  # install (e.g. fastapi pinned below the starlette it is paired with) fails here instead
+  # of in a user's `sam build`. Most examples have no matrix entry, so nothing else would
+  # notice. Each file is resolved with the Python its example targets: the template's
+  # `Runtime: pythonX.Y`, else the Dockerfile's `python:X.Y` base, else 3.12.
+  requirements:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: |
+            3.12
+            3.13
+            3.14
+
+      - name: Dry-run install changed requirements files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          # Same base as select-examples.sh: the merge ref's first parent, else merge-base.
+          if git rev-parse --verify --quiet HEAD^2 >/dev/null; then
+            base="$(git rev-parse HEAD^1)"
+          elif [[ -n "${BASE_SHA:-}" ]] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            base="$(git merge-base "$BASE_SHA" HEAD)"
+          else
+            echo "No pull request base: nothing to check."
+            exit 0
+          fi
+          mapfile -t files < <(git diff --no-renames --name-only --diff-filter=d "$base" HEAD \
+            -- 'examples/**/requirements.txt')
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No requirements.txt changed."
+            exit 0
+          fi
+          failed=0
+          for f in "${files[@]}"; do
+            example="examples/$(cut -d/ -f2 <<<"$f")"
+            ver="$(cat "$example"/template.y*ml 2>/dev/null \
+              | grep -oE 'Runtime: *python3\.[0-9]+' | head -1 | grep -oE '3\.[0-9]+' || true)"
+            if [[ -z "$ver" ]]; then
+              ver="$(cat "$(dirname "$f")/Dockerfile" "$example/Dockerfile" 2>/dev/null \
+                | grep -oE '^FROM .*python:3\.[0-9]+' | head -1 | grep -oE '3\.[0-9]+$' || true)"
+            fi
+            ver="${ver:-3.12}"
+            echo "::group::$f (python$ver)"
+            if ! "python$ver" -m pip install --quiet --dry-run --ignore-installed -r "$f"; then
+              echo "::error file=$f::pip cannot resolve $f on Python $ver"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
   # Only when something will use it. The artifact exists for the test jobs, so building
   # it when `select` chose nothing is several minutes of runner time for nobody.
   build-layer:
@@ -450,7 +508,7 @@ jobs:
   # required needs a companion job reporting the same name on the complementary paths.
   examples-verified:
     if: always()
-    needs: [select, validate, build-layer, test-image, test-zip, test-stream]
+    needs: [select, validate, requirements, build-layer, test-image, test-zip, test-stream]
     runs-on: ubuntu-24.04
     steps:
       - name: Check the verification results
