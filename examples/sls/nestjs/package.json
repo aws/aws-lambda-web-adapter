@@ -66,5 +66,10 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "pnpm": {
+    "overrides": {
+      "path-to-regexp@<0.1.13": "0.1.13"
+    }
   }
 }
