@@ -15,8 +15,8 @@ git-repository-url = "https://github.com/aws/aws-lambda-web-adapter"
 git-repository-icon = "fa-github"
 site-url = "/aws-lambda-web-adapter/"
 additional-css = ["theme/custom.css"]
-additional-js = []
-no-section-label = false
+additional-js = ["theme/aws-docs.js"]
+no-section-label = true
 cname = ""
 
 [output.html.fold]

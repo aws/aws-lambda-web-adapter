@@ -1,230 +1,413 @@
-/* AWS Lambda Web Adapter — mdBook custom theme */
-
-/* ── Fonts ── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* AWS Lambda Web Adapter — mdBook theme aligned with the AWS documentation site
+ * (docs.aws.amazon.com, Cloudscape design tokens). */
 
 :root {
-    --aws-orange: #ff9900;
-    --aws-orange-dark: #ec7211;
-    --aws-squid-ink: #232f3e;
-    --aws-smile: #ff9900;
+    --aws-font: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+    --aws-mono: Monaco, Menlo, Consolas, "Courier Prime", Courier, "Courier New", monospace;
+    --content-max-width: 900px;
+    --sidebar-width: 300px;
 }
 
-/* ── Light theme ── */
+/* ── Light theme (Cloudscape light) ── */
 .light {
     --bg: #ffffff;
-    --fg: #1a1a2e;
-    --sidebar-bg: #f8f9fb;
-    --sidebar-fg: #333;
-    --sidebar-active: var(--aws-orange-dark);
-    --links: #0073bb;
-    --inline-code-color: #c7254e;
-    --theme-popup-bg: #fafafa;
-    --search-mark-bg: #fff3cd;
+    --fg: #0f141a;
+    --fg-secondary: #656871;
+    --border: #c6c6cd;
+    --border-subtle: #ebebf0;
+
+    --sidebar-bg: #ffffff;
+    --sidebar-fg: #0f141a;
+    --sidebar-non-existant: #8c8c94;
+    --sidebar-active: #006ce0;
+    --sidebar-spacer: #c6c6cd;
+
+    --icons: #424650;
+    --icons-hover: #006ce0;
+    --links: #006ce0;
+    --links-hover: #002b66;
+    --inline-code-color: #0f141a;
+    --inline-code-bg: #f3f3f7;
+    --pre-bg: #f9f9f9;
+
+    --theme-popup-bg: #ffffff;
+    --theme-popup-border: #c6c6cd;
+    --theme-hover: #f3f3f7;
+
+    --quote-bg: #f0fbff;
+    --quote-border: #006ce0;
+    --warning-bg: #fffef0;
+    --warning-border: #8d6605;
+    --important-bg: #fff5f5;
+    --important-border: #db0000;
+
+    --table-border-color: #c6c6cd;
+    --table-header-bg: #f3f3f7;
+    --table-alternate-bg: #ffffff;
+
+    --searchbar-border-color: #8c8c94;
+    --searchbar-bg: #ffffff;
+    --searchbar-fg: #0f141a;
+    --searchbar-shadow-color: transparent;
+    --searchresults-header-fg: #656871;
+    --searchresults-border-color: #c6c6cd;
+    --searchresults-li-bg: #f3f3f7;
+    --search-mark-bg: #fff2c2;
+
+    --topbar-bg: #0f141a;
 }
 
-/* ── Navy (dark) theme ── */
+/* ── Navy theme (Cloudscape dark) ── */
 .navy {
-    --bg: #161923;
-    --fg: #d4d4d8;
-    --sidebar-bg: #1a1f2e;
-    --sidebar-fg: #b0b8c8;
-    --sidebar-active: var(--aws-orange);
-    --links: #59b0f0;
-    --inline-code-color: #f0a8c0;
-    --theme-popup-bg: #1e2433;
-    --search-mark-bg: #4a3f00;
+    --bg: #161d26;
+    --fg: #dedee3;
+    --fg-secondary: #a4a4ad;
+    --border: #424650;
+    --border-subtle: #333843;
+
+    --sidebar-bg: #161d26;
+    --sidebar-fg: #dedee3;
+    --sidebar-non-existant: #8c8c94;
+    --sidebar-active: #42b4ff;
+    --sidebar-spacer: #424650;
+
+    --icons: #c6c6cd;
+    --icons-hover: #42b4ff;
+    --links: #42b4ff;
+    --links-hover: #75cfff;
+    --inline-code-color: #dedee3;
+    --inline-code-bg: #232b37;
+    --pre-bg: #1b232d;
+
+    --theme-popup-bg: #161d26;
+    --theme-popup-border: #424650;
+    --theme-hover: #232b37;
+
+    --quote-bg: #001129;
+    --quote-border: #42b4ff;
+    --warning-bg: #191100;
+    --warning-border: #ffe347;
+    --important-bg: #1f0000;
+    --important-border: #ff7a7a;
+
+    --table-border-color: #424650;
+    --table-header-bg: #232b37;
+    --table-alternate-bg: #161d26;
+
+    --searchbar-border-color: #8c8c94;
+    --searchbar-bg: #0f141a;
+    --searchbar-fg: #dedee3;
+    --searchbar-shadow-color: transparent;
+    --searchresults-header-fg: #a4a4ad;
+    --searchresults-border-color: #424650;
+    --searchresults-li-bg: #232b37;
+    --search-mark-bg: #5c4b00;
+
+    --topbar-bg: #0f141a;
 }
 
-/* ── Global typography ── */
-body, .sidebar, .content, .menu-title {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+/* ── Typography ── */
+body, .sidebar, .content, .menu-title, input, button {
+    font-family: var(--aws-font);
 }
 
-code, pre, .hljs {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 0.875em;
+code, pre, .hljs, kbd {
+    font-family: var(--aws-mono);
 }
 
 .content main {
-    max-width: 75%;
-    line-height: 1.75;
+    line-height: 1.5;
+    font-size: 1.6rem;
 }
 
-.content main h1 { font-size: 2em; font-weight: 700; margin-top: 0; }
-.content main h2 { font-size: 1.5em; font-weight: 600; margin-top: 2.5rem; padding-bottom: 0.3rem; border-bottom: 2px solid var(--aws-orange); }
-.content main h3 { font-size: 1.2em; font-weight: 600; margin-top: 1.8rem; }
+.content main h1,
+.content main h2,
+.content main h3,
+.content main h4 {
+    color: var(--fg);
+    font-weight: 700;
+    line-height: 1.25;
+}
 
-/* ── Sidebar ── */
+.content main h1 { font-size: 4.2rem; margin: 0.4rem 0 2.4rem; letter-spacing: -0.01em; }
+.content main h2 { font-size: 2.4rem; margin-top: 3.2rem; }
+.content main h3 { font-size: 1.8rem; margin-top: 2.4rem; }
+.content main h4 { font-size: 1.6rem; margin-top: 2rem; }
+
+/* Header anchors render as plain text, like AWS docs headings. */
+.content main :is(h1, h2, h3, h4) a.header,
+.content main :is(h1, h2, h3, h4) a.header:hover {
+    color: inherit;
+    text-decoration: none;
+}
+
+/* ── Links ── */
+.content a:link,
+.content a:visited {
+    color: var(--links);
+    text-decoration: none;
+}
+
+.content main a:hover {
+    color: var(--links-hover);
+    text-decoration: underline;
+}
+
+/* ── Dark utility strip above the header, as on docs.aws.amazon.com ── */
+.page-wrapper::before {
+    content: "";
+    display: block;
+    height: 4px;
+    background: var(--topbar-bg);
+}
+
+/* ── Header / menu bar ── */
+#menu-bar,
+#menu-bar.bordered {
+    background: var(--bg);
+    border-block-end: 1px solid var(--border);
+}
+
+#menu-bar .menu-title {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--fg);
+}
+
+#menu-bar i,
+#menu-bar .icon-button {
+    color: var(--icons);
+}
+
+#menu-bar i:hover,
+#menu-bar .icon-button:hover {
+    color: var(--icons-hover);
+}
+
+/* ── Sidebar navigation ── */
 .sidebar {
-    font-size: 1rem;
-    padding-top: 1rem;
+    font-size: 1.4rem;
+    border-inline-end: 1px solid var(--border);
+    border-block-start: 4px solid var(--topbar-bg);
 }
 
 .sidebar .sidebar-scrollbox {
-    padding: 0 1.2rem;
+    padding: 0 1.6rem 2.4rem;
+}
+
+/* Guide title block, inserted by aws-docs.js */
+.sidebar .aws-guide-header {
+    margin: 0 -1.6rem 1.2rem;
+    padding: 2rem 2.4rem 1.6rem;
+    border-block-end: 1px solid var(--border);
+}
+
+.sidebar .aws-guide-header a {
+    display: block;
+    color: var(--fg);
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-decoration: none;
+}
+
+.sidebar .aws-guide-header span {
+    display: block;
+    margin-top: 0.4rem;
+    color: var(--fg-secondary);
+    font-size: 1.2rem;
+    font-weight: 700;
 }
 
 .sidebar ol.chapter li a {
-    padding: 6px 0;
-    border-radius: 4px;
-    transition: color 0.15s;
-    font-size: 1.3rem;
+    color: var(--sidebar-fg);
+    padding: 0.4rem 0.8rem;
+    border-radius: 8px;
+    line-height: 2rem;
 }
 
 .sidebar ol.chapter li a:hover {
     color: var(--sidebar-active);
+    text-decoration: none;
 }
 
-.sidebar ol.chapter li.chapter-item.expanded a,
 .sidebar ol.chapter li a.active {
     color: var(--sidebar-active);
-    font-weight: 600;
+    font-weight: 700;
 }
 
-/* Sidebar section headers */
-.sidebar .chapter li.part-title {
+.sidebar ol.chapter li.part-title {
+    color: var(--fg);
     font-size: 1.4rem;
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--aws-orange-dark);
-    margin-top: 1.2rem;
-    padding-bottom: 0.2rem;
+    margin: 1.6rem 0 0.2rem;
+    padding: 0 0.8rem;
 }
 
-.navy .sidebar .chapter li.part-title {
-    color: var(--aws-orange);
+.sidebar ol.chapter li.chapter-item {
+    margin-block-start: 0.2rem;
 }
 
-/* ── Code blocks ── */
-pre {
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    border: 1px solid rgba(128, 128, 128, 0.15);
+.sidebar .chapter li a.toggle {
+    opacity: 0.8;
 }
 
-.light pre {
-    background: #f6f8fa;
+/* ── Breadcrumbs, inserted by aws-docs.js ── */
+.aws-breadcrumbs {
+    font-size: 1.4rem;
+    line-height: 2rem;
+    margin: 1.6rem 0 0.4rem;
+    color: var(--fg-secondary);
 }
 
-.navy pre {
-    background: #0d1117;
+.aws-breadcrumbs a:link,
+.aws-breadcrumbs a:visited {
+    color: var(--links);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
 }
 
-code:not(pre > code) {
-    padding: 0.15em 0.4em;
-    border-radius: 4px;
-    font-size: 0.88em;
+.aws-breadcrumbs .sep {
+    margin: 0 0.8rem;
+    color: var(--fg-secondary);
 }
 
-.light code:not(pre > code) {
-    background: #f0f2f5;
+/* ── Code ── */
+:not(pre) > code,
+.content main :not(pre) > code {
+    color: var(--inline-code-color);
+    background: var(--inline-code-bg);
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    font-size: 0.9em;
 }
 
-.navy code:not(pre > code) {
-    background: #252b38;
+.content main pre {
+    border: 1px solid var(--border);
+    border-radius: 3px;
+}
+
+.content main pre > code,
+.content main pre > code.hljs {
+    background: var(--pre-bg);
+    padding: 1.2rem 1.6rem;
+    font-size: 1.4rem;
+    line-height: 2rem;
+    border-radius: 3px;
 }
 
 /* ── Tables ── */
-table {
+.content main table {
     border-collapse: collapse;
     width: 100%;
-    margin: 1.2rem 0;
-    font-size: 0.92em;
+    margin: 1.6rem 0;
+    font-size: 1.4rem;
+    line-height: 2rem;
 }
 
-table thead th {
-    background: var(--aws-squid-ink);
-    color: #fff;
-    font-weight: 600;
-    padding: 0.65rem 0.9rem;
-    text-align: left;
+.content main table thead {
+    background: var(--table-header-bg);
 }
 
-.navy table thead th {
-    background: #252d3d;
+.content main table th {
+    color: var(--fg);
+    font-weight: 700;
+    text-align: start;
 }
 
-table tbody td {
-    padding: 0.55rem 0.9rem;
-    border-bottom: 1px solid rgba(128, 128, 128, 0.15);
-}
-
-table tbody tr:hover {
-    background: rgba(255, 153, 0, 0.04);
-}
-
-/* ── Blockquotes (used for admonitions) ── */
-blockquote {
-    border-left: 4px solid var(--aws-orange);
-    background: rgba(255, 153, 0, 0.06);
-    border-radius: 0 6px 6px 0;
+.content main table th,
+.content main table td {
     padding: 0.8rem 1.2rem;
-    margin: 1.2rem 0;
+    border: 1px solid var(--table-border-color);
+    vertical-align: top;
 }
 
-blockquote p:first-child strong {
-    color: var(--aws-orange-dark);
+.content main table tbody tr:nth-child(2n) {
+    background: var(--table-alternate-bg);
 }
 
-.navy blockquote p:first-child strong {
-    color: var(--aws-orange);
+/* ── Admonitions (blockquotes), styled as AWS Note / Warning / Important alerts ── */
+.content main blockquote {
+    position: relative;
+    margin: 2rem 0;
+    padding: 1.2rem 1.6rem 1.2rem 4.4rem;
+    color: var(--fg);
+    background: var(--quote-bg);
+    border: 2px solid var(--quote-border);
+    border-radius: 12px;
 }
 
-/* ── Links ── */
-.content a {
-    text-decoration: none;
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.15s;
+.content main blockquote::before {
+    content: "i";
+    position: absolute;
+    left: 1.6rem;
+    top: 1.5rem;
+    width: 1.6rem;
+    height: 1.6rem;
+    border: 2px solid var(--quote-border);
+    border-radius: 50%;
+    box-sizing: border-box;
+    color: var(--quote-border);
+    font: 700 1.1rem/1.2rem var(--aws-font);
+    text-align: center;
 }
 
-.content a:hover {
-    border-bottom-color: var(--links);
+.content main blockquote.aws-warning {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
 }
 
-/* ── Navigation buttons ── */
+.content main blockquote.aws-warning::before {
+    content: "!";
+    border-color: var(--warning-border);
+    color: var(--warning-border);
+}
+
+.content main blockquote.aws-important {
+    background: var(--important-bg);
+    border-color: var(--important-border);
+}
+
+.content main blockquote.aws-important::before {
+    content: "!";
+    border-color: var(--important-border);
+    color: var(--important-border);
+}
+
+.content main blockquote > :first-child { margin-top: 0; }
+.content main blockquote > :last-child { margin-bottom: 0; }
+
+/* Alert title on its own line, as in AWS docs ("Note", "Warning", ...) */
+.content main blockquote .aws-alert-title {
+    display: block;
+    font-weight: 700;
+    margin-bottom: 0.4rem;
+}
+
+/* ── Previous / next navigation ── */
 .nav-chapters {
-    font-size: 0.9rem;
-    opacity: 0.7;
-    transition: opacity 0.15s;
+    color: var(--icons);
 }
 
 .nav-chapters:hover {
-    opacity: 1;
-    color: var(--aws-orange);
+    color: var(--icons-hover);
 }
-
-/* ── Menu bar ── */
-.menu-bar {
-    border-bottom: 1px solid rgba(128, 128, 128, 0.12);
-}
-
-.menu-bar .menu-title {
-    font-weight: 600;
-    font-size: 1rem;
-}
-
-/* ── Scrollbar (webkit) ── */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.3); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.5); }
 
 /* ── Images ── */
 .content main img {
-    border-radius: 8px;
-    margin: 1rem 0;
     max-width: 100%;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    margin: 1.6rem 0;
 }
 
-.navy .content main img {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+/* ── Small screens ── */
+@media only screen and (max-width: 600px) {
+    .content main h1 { font-size: 3rem; }
+    .content main h2 { font-size: 2.2rem; }
 }
 
-/* ── Print tweaks ── */
+/* ── Print ── */
 @media print {
-    .content main h2 { border-bottom-color: #ccc; }
-    table thead th { background: #eee; color: #000; }
+    .page-wrapper::before,
+    .aws-breadcrumbs { display: none; }
+    .content main blockquote { border-width: 1px; }
 }
