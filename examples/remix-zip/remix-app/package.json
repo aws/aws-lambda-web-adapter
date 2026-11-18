@@ -14,11 +14,11 @@
     "@remix-run/express": "^2.17.5",
     "@remix-run/node": "^2.17.5",
     "@remix-run/react": "^2.17.5",
-    "compression": "^1.7.4",
+    "compression": "^1.8.2",
     "cross-env": "^7.0.3",
     "express": "^4.22.3",
     "isbot": "^4.1.0",
-    "morgan": "^1.12.0",
+    "morgan": "^1.12.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
@@ -39,7 +39,7 @@
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^4.6.0",
     "postcss": "^8.5.28",
-    "tailwindcss": "^3.4.4",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.1.6",
     "vite": "^5.1.0",
     "vite-tsconfig-paths": "^4.2.1"
