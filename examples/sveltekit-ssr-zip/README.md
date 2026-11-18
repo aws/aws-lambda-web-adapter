@@ -26,7 +26,7 @@ To get more information of Wrapper script, please read Lambda documentation [her
 1. `cd app` to switch current working directory to newly created `app` directory:
     1. `npm install --save-dev @sveltejs/adapter-node` to install sveltekit [node adapter](https://svelte.dev/docs/kit/adapter-node)
     1. `npm uninstall @sveltejs/adapter-auto` to remove unused auto adapter
-    1. replace `import adapter from '@sveltejs/adapter-auto';` with `import adapter from '@sveltejs/adapter-node';` in `svelte.config.js`
+    1. replace `import adapter from '@sveltejs/adapter-auto';` with `import adapter from '@sveltejs/adapter-node';` in `vite.config.ts` (SvelteKit 3 takes its config, including `adapter`, as `sveltekit({ adapter: adapter() })` in `vite.config.ts`; there is no `svelte.config.js`)
     1. add a `run.sh` [wrapper](https://docs.aws.amazon.com/lambda/latest/dg/runtimes-modify.html#runtime-wrapper) script:
     ```sh
     cat << EOF > ./run.sh
