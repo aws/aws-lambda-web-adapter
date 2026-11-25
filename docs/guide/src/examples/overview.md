@@ -40,6 +40,7 @@ The repository includes working examples for many popular web frameworks, packag
 | [Hono in Zip](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/hono-zip) | Zip | No |
 | [Bun GraphQL](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/bun-graphql-zip) | Zip | No |
 | [Bun GraphQL Streaming](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/bun-graphql-streaming-zip) | Zip | Yes |
+| [Bun Hono](https://github.com/aws/aws-lambda-web-adapter/tree/main/examples/bun-hono) | Docker | No |
 
 ## Java
 

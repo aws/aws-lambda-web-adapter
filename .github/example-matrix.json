@@ -1,5 +1,6 @@
 {
   "image": [
+    { "name": "bun-hono", "path": "/", "expect_body": "Hello from Hono" },
     { "name": "expressjs", "path": "/", "expect_body": "Hi there!" },
     { "name": "fastapi", "path": "/", "expect_body": "message" },
     { "name": "fastapi-background-tasks", "path": "/", "expect_body": "message" },
