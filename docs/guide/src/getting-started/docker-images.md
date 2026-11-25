@@ -1,10 +1,13 @@
 # Docker Images
 
-To use Lambda Web Adapter with Docker images, package your web app in a Dockerfile and add one line to copy the adapter binary:
+To use Lambda Web Adapter with Docker images, package your web app in a Dockerfile, copy the adapter binary, and identify the OS-only runtime to AWS SDKs:
 
 ```dockerfile
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
+ENV AWS_EXECUTION_ENV=AWS_Lambda_provided_custom
 ```
+
+`AWS_EXECUTION_ENV` allows AWS SDK user agents to identify requests from OS-only Lambda runtimes. It must be set in the application image because a multi-stage `COPY --from` transfers the adapter binary, not environment metadata from the adapter image.
 
 [Non-AWS base images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html) can be used since the [Runtime Interface Client](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html#images-ric) ships with the adapter.
 
@@ -13,6 +16,7 @@ COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt
 ```dockerfile
 FROM public.ecr.aws/docker/library/node:20-slim
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0 /lambda-adapter /opt/extensions/lambda-adapter
+ENV AWS_EXECUTION_ENV=AWS_Lambda_provided_custom
 ENV PORT=7000
 WORKDIR "/var/task"
 ADD src/package.json /var/task/package.json
