@@ -20,6 +20,7 @@ The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local 
 
 - Run web applications on AWS Lambda
 - Supports Amazon API Gateway Rest API and Http API endpoints, Lambda Function URLs, and Application Load Balancer
+- Supports VPC Lattice Lambda event structure version V2 with target-group configuration; V1 events are treated as non-HTTP events and passed through to `AWS_LWA_PASS_THROUGH_PATH` (default `/events`)
 - Supports Lambda managed runtimes, custom runtimes and docker OCI images
 - Supports Lambda Managed Instances for multi-concurrent request handling
 - Supports Lambda SnapStart with before-checkpoint and after-restore hooks
@@ -173,7 +174,9 @@ See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a c
 - [FastHTML with Response Streaming in Zip](examples/fasthtml-response-streaming-zip)
 - [Remix](examples/remix/)
 - [Remix in Zip](examples/remix-zip/)
+- [Bun Hono](examples/bun-hono)
 - [Sveltekit SSR Zip](examples/sveltekit-ssr-zip/)
+- [Hono in Zip](examples/hono-zip)
 - [Datadog](examples/datadog)
 - [Datadog in Zip](examples/datadog-zip)
 

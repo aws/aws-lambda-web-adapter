@@ -2,7 +2,7 @@ annotated-types==0.7.0
 anyio==4.14.2
 boto3==1.35.63
 botocore==1.35.63
-certifi==2024.8.30
+certifi==2026.10.18
 charset-normalizer==3.4.0
 click==8.1.7
 fastapi==0.115.5
