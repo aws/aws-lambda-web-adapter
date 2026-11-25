@@ -5,6 +5,13 @@ A tool to run web applications on AWS Lambda
 AWS Lambda Web Adapter allows developers to build web apps (http api) with familiar frameworks (e.g. Express.js, Next.js, Flask, SpringBoot, ASP.NET and Laravel, anything speaks HTTP 1.1/1.0) and run it on AWS Lambda.
 The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local computers.
 
+> [!TIP]
+> **Building a Node.js web app? Consider [AWS Lambda Web Functions](https://docs.aws.amazon.com/lambda/latest/dg/web-functions.html).**
+> Lambda Web Functions is a native Lambda compute option where your code handles HTTP requests directly, with no adapter required.
+> It supports native HTTP response streaming, concurrent requests within a warm execution environment, and Multi-Region routing, and it bills for active CPU time and held memory rather than idle time spent waiting on downstream calls.
+> At launch it supports the Node.js runtime only. For new Node.js web apps we recommend Lambda Web Functions. For other runtimes and container images, keep using Lambda Web Adapter until Lambda Web Functions supports them natively.
+> See the [launch announcement](https://aws.amazon.com/about-aws/whats-new/2026/10/aws-lambda-web-functions/) for supported regions.
+
 ![Lambda Web Adapter](docs/images/lambda-adapter-overview.png)
 
 📖 **[Read the full User Guide](https://aws.github.io/aws-lambda-web-adapter/)**
@@ -13,6 +20,7 @@ The same docker image can run on AWS Lambda, Amazon EC2, AWS Fargate, and local 
 
 - Run web applications on AWS Lambda
 - Supports Amazon API Gateway Rest API and Http API endpoints, Lambda Function URLs, and Application Load Balancer
+- Supports VPC Lattice Lambda event structure version V2 with target-group configuration; V1 events are treated as non-HTTP events and passed through to `AWS_LWA_PASS_THROUGH_PATH` (default `/events`)
 - Supports Lambda managed runtimes, custom runtimes and docker OCI images
 - Supports Lambda Managed Instances for multi-concurrent request handling
 - Supports Lambda SnapStart with before-checkpoint and after-restore hooks
@@ -166,7 +174,9 @@ See the [FastAPI with SnapStart example](examples/fastapi-snapstart-zip) for a c
 - [FastHTML with Response Streaming in Zip](examples/fasthtml-response-streaming-zip)
 - [Remix](examples/remix/)
 - [Remix in Zip](examples/remix-zip/)
+- [Bun Hono](examples/bun-hono)
 - [Sveltekit SSR Zip](examples/sveltekit-ssr-zip/)
+- [Hono in Zip](examples/hono-zip)
 - [Datadog](examples/datadog)
 - [Datadog in Zip](examples/datadog-zip)
 

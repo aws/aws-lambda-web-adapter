@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/golang:1.23-alpine AS build_base
+FROM public.ecr.aws/docker/library/golang:1.25-alpine AS build_base
 RUN apk add --no-cache git
 WORKDIR /tmp/gin
 
